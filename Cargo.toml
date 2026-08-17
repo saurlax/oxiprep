@@ -1,0 +1,15 @@
+[package]
+name = "oxiprep"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Open-source Rust CAE preprocessor (early scaffold)"
+repository = "https://github.com/oxiprep/oxiprep"
+readme = "README.md"
+keywords = ["cae", "cad", "mesh", "preprocessor", "opencascade"]
+categories = ["science", "graphics"]
+
+[dependencies]
+# Headless OpenCASCADE 8.x kernel. First `cargo build` downloads a prebuilt
+# OCCT static library for the host target; UI/visualization is not included.
+cadrum = "0.8.16"
