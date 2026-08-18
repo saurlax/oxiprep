@@ -14,6 +14,8 @@ categories = ["science", "graphics"]
 eframe = "0.36.1"
 egui_dock = "0.21.1"
 cadrum = "0.8.16"
+rfd = "0.15"
+bytemuck = { version = "1", features = ["derive"] }
 
 [package.metadata.bundle]
 name = "Oxiprep"
