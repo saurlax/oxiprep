@@ -1,31 +1,34 @@
-# Oxiprep
+<p align="center">
+  <img src="assets/logo.svg" width="128" alt="Oxiprep">
+</p>
 
-Open-source **Rust CAE preprocessor**. This repository is an early scaffold: geometry kernel is pinned, product architecture (especially the client UI) is not.
+<h1 align="center">Oxiprep</h1>
 
-## Current stack
+<p align="center">
+  Open-source Rust CAE preprocessor.<br>
+  egui + <a href="https://crates.io/crates/cadrum">cadrum</a> (OpenCASCADE 8.x)
+</p>
 
-| Layer | Choice | Status |
-| --- | --- | --- |
-| Language | Rust 1.97 (edition 2024) | pinned in `rust-toolchain.toml` |
-| CAD / B-Rep kernel | [cadrum](https://crates.io/crates/cadrum) 0.8.16 (OpenCASCADE 8.x, statically linked, headless) | declared |
-| Visualization / GUI | undecided | not started |
-| Meshing / BC / solver export | undecided | not started |
-| License | undecided | not started |
+## Setup
 
-cadrum ships prebuilt OCCT for common native targets and can also target `wasm32`. It does **not** provide a viewport. Cross-platform UI options (egui, Iced, Slint, Tauri + wgpu, etc.) are still open.
-
-OCCT inside cadrum is LGPL-2.1; distributing a binary that links it must follow those terms.
-
-## Build
-
-Requires [Rust](https://rustup.rs/) 1.97+. The first build that compiles `cadrum` downloads a prebuilt OpenCASCADE tarball (no system OCCT install).
+Rust 1.97 (see `rust-toolchain.toml`).
 
 ```bash
 cargo run
 ```
 
-## Intentional non-goals for this commit
+```bash
+cargo bundle --release
+```
 
-- No UI, renderer, or plugin system yet
-- No mesh/BC/solver workflow yet
-- `cadrum` is listed as a dependency so the kernel choice is recorded; application code does not call it yet
+The first build downloads a prebuilt OpenCASCADE library.
+
+## Contributing
+
+Issues and pull requests are welcome. Run `cargo fmt` before sending a change.
+
+## License
+
+Oxiprep is licensed under the [Apache License 2.0](LICENSE).
+
+[cadrum](https://crates.io/crates/cadrum) is MIT. OpenCASCADE Technology (OCCT), which cadrum links statically, is [LGPL-2.1 with the Open CASCADE exception](https://dev.opencascade.org/resources/licensing). That applies to OCCT itself—prebuilt or built from source—not to this repository’s Apache-2.0 code. Binaries that include OCCT must also meet the LGPL-2.1 terms.

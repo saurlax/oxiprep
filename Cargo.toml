@@ -3,13 +3,23 @@ name = "oxiprep"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
-description = "Open-source Rust CAE preprocessor (early scaffold)"
-repository = "https://github.com/oxiprep/oxiprep"
+description = "Open-source Rust CAE preprocessor"
+repository = "https://github.com/saurlax/oxiprep"
 readme = "README.md"
+license = "Apache-2.0"
 keywords = ["cae", "cad", "mesh", "preprocessor", "opencascade"]
 categories = ["science", "graphics"]
 
 [dependencies]
-# Headless OpenCASCADE 8.x kernel. First `cargo build` downloads a prebuilt
-# OCCT static library for the host target; UI/visualization is not included.
+eframe = "0.36.1"
+egui_dock = "0.21.1"
 cadrum = "0.8.16"
+
+[package.metadata.bundle]
+name = "Oxiprep"
+identifier = "com.saurlax.oxiprep"
+icon = ["assets/macos/AppIcon.icns", "assets/app-icon.png"]
+category = "Graphics Design"
+short_description = "Open-source Rust CAE preprocessor"
+osx_minimum_system_version = "11.0"
+

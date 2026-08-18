@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="logo-title">
+  <title id="logo-title">Oxiprep</title>
+  <g fill="none" fill-rule="evenodd">
+    <circle cx="64" cy="64" r="52" stroke="#E25822" stroke-width="8"/>
+    <path fill="#F07A3A" d="M64 36 90 51 64 66 38 51z"/>
+    <path fill="#C4471A" d="M38 51 64 66 64 96 38 81z"/>
+    <path fill="#9A3412" d="M90 51 64 66 90 81z"/>
+    <path fill="#E25822" d="M64 66 64 96 90 81z"/>
+  </g>
+</svg>
