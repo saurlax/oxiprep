@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::command::{AddBody, Close, Command, CommandError, Create, History, Import};
+use crate::command::{AddBody, Close, Command, CommandError, Create, Delete, History, Import};
 use crate::document::Document;
 
 pub struct Session {
@@ -38,6 +38,15 @@ impl Session {
         body: crate::document::Body,
     ) -> Result<String, CommandError> {
         self.run(Box::new(AddBody::new(model, body)))
+    }
+
+    pub fn delete_selected(&mut self) -> Result<String, CommandError> {
+        let cmd = Delete::new(&self.document).ok_or(CommandError::NothingToDelete)?;
+        self.run(Box::new(cmd))
+    }
+
+    pub fn can_delete(&self) -> bool {
+        Delete::can_run(&self.document)
     }
 
     pub fn close_model(&mut self, index: usize) -> Result<String, CommandError> {
@@ -220,5 +229,105 @@ mod tests {
         assert_eq!(session.document.models[0].bodies[1].name, "Sphere");
         session.undo().unwrap();
         assert_eq!(session.document.models[0].bodies.len(), 1);
+    }
+
+    #[test]
+    fn delete_model_undo_redo() {
+        let mut session = Session::new();
+        let model = crate::geometry::CreateKind::r#box()
+            .into_model(&session.document)
+            .unwrap();
+        session.create_model(model).unwrap();
+        let message = session.delete_selected().unwrap();
+        assert_eq!(message, "Deleted Box.");
+        assert!(session.document.models.is_empty());
+        session.undo().unwrap();
+        assert_eq!(session.document.models[0].name, "Box");
+        session.redo().unwrap();
+        assert!(session.document.models.is_empty());
+    }
+
+    #[test]
+    fn delete_one_body_keeps_the_other() {
+        let mut session = Session::new();
+        let model = crate::geometry::CreateKind::r#box()
+            .into_model(&session.document)
+            .unwrap();
+        session.create_model(model).unwrap();
+        let body = crate::geometry::CreateKind::sphere()
+            .into_body(&session.document, 0)
+            .unwrap();
+        session.add_body(0, body).unwrap();
+        session.document.selection = vec![Selection::Body { model: 0, body: 1 }];
+        session.delete_selected().unwrap();
+        assert_eq!(session.document.models.len(), 1);
+        assert_eq!(session.document.models[0].bodies.len(), 1);
+        assert_eq!(session.document.models[0].bodies[0].name, "Box");
+        session.undo().unwrap();
+        assert_eq!(session.document.models[0].bodies.len(), 2);
+        assert_eq!(session.document.models[0].bodies[1].name, "Sphere");
+    }
+
+    #[test]
+    fn delete_last_body_removes_model() {
+        let mut session = Session::new();
+        let model = crate::geometry::CreateKind::r#box()
+            .into_model(&session.document)
+            .unwrap();
+        session.create_model(model).unwrap();
+        session.document.selection = vec![Selection::Body { model: 0, body: 0 }];
+        session.delete_selected().unwrap();
+        assert!(session.document.models.is_empty());
+        session.undo().unwrap();
+        assert_eq!(session.document.models[0].bodies[0].name, "Box");
+        assert_eq!(
+            session.document.selection,
+            vec![Selection::Body { model: 0, body: 0 }]
+        );
+    }
+
+    #[test]
+    fn delete_face_removes_owning_body() {
+        let mut session = Session::new();
+        let model = crate::geometry::CreateKind::r#box()
+            .into_model(&session.document)
+            .unwrap();
+        session.create_model(model).unwrap();
+        let body = crate::geometry::CreateKind::sphere()
+            .into_body(&session.document, 0)
+            .unwrap();
+        session.add_body(0, body).unwrap();
+        session.document.selection = vec![Selection::Face {
+            model: 0,
+            body: 1,
+            id: 1,
+        }];
+        session.delete_selected().unwrap();
+        assert_eq!(session.document.models.len(), 1);
+        assert_eq!(session.document.models[0].bodies.len(), 1);
+        assert_eq!(session.document.models[0].bodies[0].name, "Box");
+        session.undo().unwrap();
+        assert_eq!(session.document.models[0].bodies.len(), 2);
+        assert_eq!(
+            session.document.selection,
+            vec![Selection::Face {
+                model: 0,
+                body: 1,
+                id: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn delete_does_nothing_without_selection() {
+        let mut session = Session::new();
+        assert!(!session.can_delete());
+        assert!(session.delete_selected().is_err());
+        let model = crate::geometry::CreateKind::r#box()
+            .into_model(&session.document)
+            .unwrap();
+        session.create_model(model).unwrap();
+        session.document.selection.clear();
+        assert!(!session.can_delete());
     }
 }

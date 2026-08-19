@@ -14,6 +14,7 @@ pub trait Command {
 pub enum CommandError {
     Import(ImportError),
     NoModel,
+    NothingToDelete,
     Failed(String),
 }
 
@@ -22,6 +23,7 @@ impl CommandError {
         match self {
             Self::Import(err) => err.message(),
             Self::NoModel => "Nothing to close.",
+            Self::NothingToDelete => "Nothing to delete.",
             Self::Failed(text) => text,
         }
     }
@@ -314,4 +316,164 @@ impl Command for AddBody {
         document.selection = self.prev_selection.clone();
         Ok(())
     }
+}
+
+enum Removal {
+    Model {
+        index: usize,
+        held: Option<Model>,
+    },
+    Body {
+        model: usize,
+        index: usize,
+        held: Option<Body>,
+    },
+}
+
+pub struct Delete {
+    label: String,
+    message: String,
+    plan: Vec<Removal>,
+    prev_selection: Vec<Selection>,
+}
+
+impl Delete {
+    pub fn new(document: &Document) -> Option<Self> {
+        let plan = plan_deletions(document);
+        if plan.is_empty() {
+            return None;
+        }
+        let (label, message) = delete_copy(document, &plan);
+        Some(Self {
+            label,
+            message,
+            plan,
+            prev_selection: Vec::new(),
+        })
+    }
+
+    pub fn can_run(document: &Document) -> bool {
+        !plan_deletions(document).is_empty()
+    }
+}
+
+impl Command for Delete {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn execute(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        self.prev_selection = document.selection.clone();
+        for item in &mut self.plan {
+            match item {
+                Removal::Body { model, index, held } => {
+                    *held = Some(
+                        document
+                            .take_body(*model, *index)
+                            .ok_or(CommandError::NothingToDelete)?,
+                    );
+                }
+                Removal::Model { index, held } => {
+                    *held = Some(
+                        document
+                            .take_model(*index)
+                            .ok_or(CommandError::NothingToDelete)?,
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        for item in self.plan.iter_mut().rev() {
+            match item {
+                Removal::Model { index, held } => {
+                    let model = held.take().ok_or(CommandError::NothingToDelete)?;
+                    document.insert_model(*index, model);
+                }
+                Removal::Body { model, index, held } => {
+                    let body = held.take().ok_or(CommandError::NothingToDelete)?;
+                    if !document.insert_body(*model, *index, body) {
+                        return Err(CommandError::NothingToDelete);
+                    }
+                }
+            }
+        }
+        document.selection = self.prev_selection.clone();
+        Ok(())
+    }
+}
+
+fn plan_deletions(document: &Document) -> Vec<Removal> {
+    use std::collections::BTreeSet;
+
+    let mut models = BTreeSet::new();
+    let mut bodies = BTreeSet::new();
+    for s in &document.selection {
+        let m = s.model();
+        if document.models.get(m).is_none() {
+            continue;
+        }
+        match *s {
+            Selection::Model(_) => {
+                models.insert(m);
+            }
+            _ => {
+                if let Some(b) = s.body() {
+                    if document.models[m].bodies.get(b).is_some() {
+                        bodies.insert((m, b));
+                    }
+                }
+            }
+        }
+    }
+    for m in 0..document.models.len() {
+        if models.contains(&m) {
+            continue;
+        }
+        let n = document.models[m].bodies.len();
+        if n > 0 && (0..n).all(|b| bodies.contains(&(m, b))) {
+            models.insert(m);
+        }
+    }
+    bodies.retain(|(m, _)| !models.contains(m));
+
+    let mut plan = Vec::new();
+    for &(model, index) in bodies.iter().rev() {
+        plan.push(Removal::Body {
+            model,
+            index,
+            held: None,
+        });
+    }
+    for &index in models.iter().rev() {
+        plan.push(Removal::Model { index, held: None });
+    }
+    plan
+}
+
+fn delete_copy(document: &Document, plan: &[Removal]) -> (String, String) {
+    if let [item] = plan {
+        let name = match *item {
+            Removal::Model { index, .. } => document.models.get(index).map(|m| m.name.clone()),
+            Removal::Body { model, index, .. } => document
+                .models
+                .get(model)
+                .and_then(|m| m.bodies.get(index))
+                .map(|b| b.name.clone()),
+        };
+        if let Some(name) = name {
+            return (format!("Delete {name}"), format!("Deleted {name}."));
+        }
+    }
+    let n = plan.len();
+    (
+        "Delete".to_string(),
+        format!("Deleted {n} {}.", if n == 1 { "item" } else { "items" }),
+    )
 }

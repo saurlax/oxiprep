@@ -41,7 +41,7 @@ Drag-and-drop onto the viewport imports using the same format registry as File â
 ## Edit
 
 - Undo / Redo
-- Delete (geometry or mesh selection, with clear rules)
+- Delete â€” selected models, or the bodies that own the current selection (face, edge, vertex, cell, node). If every body of a model is targeted, the model is removed. Mesh sub-entity delete is later.
 - Preferences (units, tessellation, mouse, working directory)
 
 ## Geometry

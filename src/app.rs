@@ -99,6 +99,13 @@ impl OxiprepApp {
     fn apply_redo(&mut self) {
         log_history(&mut self.console, self.session.redo());
     }
+
+    fn apply_delete(&mut self) {
+        match self.session.delete_selected() {
+            Ok(message) => self.log(message),
+            Err(err) => self.log(err.message()),
+        }
+    }
 }
 
 impl eframe::App for OxiprepApp {
@@ -112,6 +119,7 @@ impl eframe::App for OxiprepApp {
         let redo_shortcut =
             KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z);
         let redo_y_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::Y);
+        let delete_shortcut = KeyboardShortcut::new(Modifiers::NONE, egui::Key::Delete);
         if ui.input_mut(|i| i.consume_shortcut(&open_shortcut)) {
             self.open_dialog();
         }
@@ -121,6 +129,15 @@ impl eframe::App for OxiprepApp {
             self.apply_redo();
         } else if ui.input_mut(|i| i.consume_shortcut(&undo_shortcut)) {
             self.apply_undo();
+        }
+        let mut delete = false;
+        if !ui.ctx().text_edit_focused()
+            && ui.input_mut(|i| {
+                i.consume_shortcut(&delete_shortcut)
+                    || i.consume_key(Modifiers::NONE, egui::Key::Backspace)
+            })
+        {
+            delete = true;
         }
 
         let dropped: Vec<_> = ui.ctx().input(|i| {
@@ -147,6 +164,7 @@ impl eframe::App for OxiprepApp {
         let has_models = !self.session.document.is_empty();
         let can_undo = self.session.can_undo();
         let can_redo = self.session.can_redo();
+        let can_delete = self.session.can_delete();
         let undo_text = match self.session.undo_label() {
             Some(label) => format!("Undo {label}"),
             None => "Undo".to_string(),
@@ -203,6 +221,18 @@ impl eframe::App for OxiprepApp {
                         .clicked()
                     {
                         redo = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .add_enabled(
+                            can_delete,
+                            egui::Button::new("Delete")
+                                .shortcut_text(ui.ctx().format_shortcut(&delete_shortcut)),
+                        )
+                        .clicked()
+                    {
+                        delete = true;
                         ui.close();
                     }
                 });
@@ -311,6 +341,9 @@ impl eframe::App for OxiprepApp {
         if redo {
             self.apply_redo();
         }
+        if delete && can_delete {
+            self.apply_delete();
+        }
         if quit {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -408,6 +441,7 @@ fn outliner_ui(ui: &mut Ui, session: &mut Session, console: &mut Vec<String>) {
         return;
     }
     let mut close = None;
+    let mut delete_body = None;
     {
         let document = &mut session.document;
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -434,8 +468,8 @@ fn outliner_ui(ui: &mut Ui, session: &mut Session, console: &mut Vec<String>) {
                             }];
                         }
                         response.context_menu(|ui| {
-                            if ui.button("Close").clicked() {
-                                close = Some(mi);
+                            if ui.button("Delete").clicked() {
+                                delete_body = Some((mi, bi));
                                 ui.close();
                             }
                         });
@@ -452,6 +486,16 @@ fn outliner_ui(ui: &mut Ui, session: &mut Session, console: &mut Vec<String>) {
                 });
             }
         });
+    }
+    if let Some((mi, bi)) = delete_body {
+        session.document.selection = vec![Selection::Body {
+            model: mi,
+            body: bi,
+        }];
+        match session.delete_selected() {
+            Ok(message) => console.push(message),
+            Err(err) => console.push(err.message().to_string()),
+        }
     }
     if let Some(mi) = close {
         match session.close_model(mi) {

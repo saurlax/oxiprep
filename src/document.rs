@@ -105,6 +105,53 @@ impl Selection {
             },
         })
     }
+
+    fn remap_after_remove_body(self, model: usize, removed: usize) -> Option<Self> {
+        if self.model() != model {
+            return Some(self);
+        }
+        match self {
+            Self::Model(m) => Some(Self::Model(m)),
+            Self::Body { body, .. } => {
+                let body = shift_index(body, removed)?;
+                Some(Self::Body { model, body })
+            }
+            Self::Face { body, id, .. } => {
+                let body = shift_index(body, removed)?;
+                Some(Self::Face { model, body, id })
+            }
+            Self::Edge { body, id, .. } => {
+                let body = shift_index(body, removed)?;
+                Some(Self::Edge { model, body, id })
+            }
+            Self::Vertex { body, index, .. } => {
+                let body = shift_index(body, removed)?;
+                Some(Self::Vertex { model, body, index })
+            }
+            Self::Node { body, index, .. } => {
+                let body = shift_index(body, removed)?;
+                Some(Self::Node { model, body, index })
+            }
+            Self::Cell { body, index, .. } => {
+                let body = shift_index(body, removed)?;
+                Some(Self::Cell { model, body, index })
+            }
+            Self::MeshEdge { body, a, b, .. } => {
+                let body = shift_index(body, removed)?;
+                Some(Self::MeshEdge { model, body, a, b })
+            }
+        }
+    }
+}
+
+fn shift_index(index: usize, removed: usize) -> Option<usize> {
+    if index == removed {
+        None
+    } else if index > removed {
+        Some(index - 1)
+    } else {
+        Some(index)
+    }
 }
 
 pub struct Document {
@@ -227,6 +274,30 @@ impl Document {
             .filter_map(|s| s.remap_after_remove(index))
             .collect();
         Some(model)
+    }
+
+    pub fn insert_body(&mut self, model: usize, index: usize, body: Body) -> bool {
+        let Some(m) = self.models.get_mut(model) else {
+            return false;
+        };
+        let index = index.min(m.bodies.len());
+        m.bodies.insert(index, body);
+        true
+    }
+
+    pub fn take_body(&mut self, model: usize, index: usize) -> Option<Body> {
+        let m = self.models.get_mut(model)?;
+        if index >= m.bodies.len() {
+            return None;
+        }
+        let body = m.bodies.remove(index);
+        self.selection = self
+            .selection
+            .iter()
+            .copied()
+            .filter_map(|s| s.remap_after_remove_body(model, index))
+            .collect();
+        Some(body)
     }
 
     pub fn unique_model_name(&self, base: &str) -> String {
