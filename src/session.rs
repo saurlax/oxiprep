@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::command::{AddBody, Close, Command, CommandError, Create, Delete, History, Import};
 use crate::document::Document;
+use crate::project::{self, ProjectError};
 
 pub struct Session {
     pub document: Document,
@@ -22,6 +23,36 @@ impl Session {
         let message = cmd.message().to_string();
         self.history.push(cmd);
         Ok(message)
+    }
+
+    pub fn new_project(&mut self) {
+        self.document = Document::new();
+        self.history = History::default();
+    }
+
+    pub fn open_project(&mut self, path: &Path) -> Result<String, ProjectError> {
+        let mut document = project::load(path)?;
+        document.path = Some(path.to_path_buf());
+        document.dirty = false;
+        self.document = document;
+        self.history = History::default();
+        Ok(format!("Opened {}.", crate::document::file_stem(path)))
+    }
+
+    pub fn save(&mut self) -> Result<String, ProjectError> {
+        let path = self.document.path.clone().ok_or(ProjectError::Write)?;
+        self.save_to(&path)
+    }
+
+    pub fn save_to(&mut self, path: &Path) -> Result<String, ProjectError> {
+        project::save(&self.document, path)?;
+        self.document.path = Some(path.to_path_buf());
+        self.document.dirty = false;
+        Ok(format!("Saved {}.", crate::document::file_stem(path)))
+    }
+
+    pub fn has_project_path(&self) -> bool {
+        self.document.path.is_some()
     }
 
     pub fn import_path(&mut self, path: &Path) -> Result<String, CommandError> {

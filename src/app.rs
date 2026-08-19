@@ -57,15 +57,102 @@ impl OxiprepApp {
         self.console.push(message.into());
     }
 
-    fn open_dialog(&mut self) {
+    fn new_project(&mut self) {
+        self.session.new_project();
+        self.create = None;
+        self.log("New project.");
+    }
+
+    fn open_project_dialog(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("Oxiprep", &["oxiprep"])
+            .pick_file();
+        if let Some(path) = file {
+            self.open_project_path(&path);
+        }
+    }
+
+    fn open_project_path(&mut self, path: &Path) {
+        match self.session.open_project(path) {
+            Ok(message) => {
+                self.create = None;
+                self.log(message);
+                if let Some(bbox) = self.session.document.bbox() {
+                    self.viewport.fit(bbox);
+                }
+            }
+            Err(err) => {
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                self.log(format!("{name}: {}", err.message()));
+            }
+        }
+    }
+
+    fn save_or_save_as(&mut self) {
+        if self.session.has_project_path() {
+            self.apply_save();
+        } else {
+            self.save_as_dialog();
+        }
+    }
+
+    fn apply_save(&mut self) {
+        match self.session.save() {
+            Ok(message) => self.log(message),
+            Err(err) => self.log(err.message()),
+        }
+    }
+
+    fn save_as_dialog(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("Oxiprep", &["oxiprep"])
+            .set_file_name("untitled.oxiprep")
+            .save_file();
+        if let Some(path) = file {
+            let path = if crate::project::is_project_path(&path) {
+                path
+            } else {
+                path.with_extension("oxiprep")
+            };
+            match self.session.save_to(&path) {
+                Ok(message) => self.log(message),
+                Err(err) => self.log(err.message()),
+            }
+        }
+    }
+
+    fn import_geometry_dialog(&mut self) {
         let files = rfd::FileDialog::new()
-            .add_filter("CAD", &["step", "stp", "brep", "stl"])
+            .add_filter("CAD", &["step", "stp", "brep"])
             .add_filter("STEP", &["step", "stp"])
             .add_filter("BRep", &["brep"])
+            .pick_files();
+        if let Some(files) = files {
+            self.import_paths(&files);
+        }
+    }
+
+    fn import_mesh_dialog(&mut self) {
+        let files = rfd::FileDialog::new()
             .add_filter("STL", &["stl"])
             .pick_files();
         if let Some(files) = files {
             self.import_paths(&files);
+        }
+    }
+
+    fn open_dropped(&mut self, paths: &[impl AsRef<Path>]) {
+        let mut rest = Vec::new();
+        for path in paths {
+            let path = path.as_ref();
+            if crate::project::is_project_path(path) {
+                self.open_project_path(path);
+            } else {
+                rest.push(path.to_path_buf());
+            }
+        }
+        if !rest.is_empty() {
+            self.import_paths(&rest);
         }
     }
 
@@ -115,13 +202,25 @@ impl eframe::App for OxiprepApp {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let open_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::O);
+        let new_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::N);
+        let save_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::S);
+        let save_as_shortcut =
+            KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::S);
         let undo_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::Z);
         let redo_shortcut =
             KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z);
         let redo_y_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::Y);
         let delete_shortcut = KeyboardShortcut::new(Modifiers::NONE, egui::Key::Delete);
+        if ui.input_mut(|i| i.consume_shortcut(&new_shortcut)) {
+            self.new_project();
+        }
         if ui.input_mut(|i| i.consume_shortcut(&open_shortcut)) {
-            self.open_dialog();
+            self.open_project_dialog();
+        }
+        if ui.input_mut(|i| i.consume_shortcut(&save_as_shortcut)) {
+            self.save_as_dialog();
+        } else if ui.input_mut(|i| i.consume_shortcut(&save_shortcut)) {
+            self.save_or_save_as();
         }
         if ui.input_mut(|i| {
             i.consume_shortcut(&redo_shortcut) || i.consume_shortcut(&redo_y_shortcut)
@@ -148,12 +247,17 @@ impl eframe::App for OxiprepApp {
                 .collect()
         });
         if !dropped.is_empty() {
-            self.import_paths(&dropped);
+            self.open_dropped(&dropped);
         }
 
         let mut undo = false;
         let mut redo = false;
+        let mut new = false;
         let mut open = false;
+        let mut save = false;
+        let mut save_as = false;
+        let mut import_geometry = false;
+        let mut import_mesh = false;
         let mut close = false;
         let mut quit = false;
         let mut fit_all = false;
@@ -179,12 +283,51 @@ impl eframe::App for OxiprepApp {
                 ui.menu_button("File", |ui| {
                     if ui
                         .add(
+                            egui::Button::new("New")
+                                .shortcut_text(ui.ctx().format_shortcut(&new_shortcut)),
+                        )
+                        .clicked()
+                    {
+                        new = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add(
                             egui::Button::new("Open...")
                                 .shortcut_text(ui.ctx().format_shortcut(&open_shortcut)),
                         )
                         .clicked()
                     {
                         open = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new("Save")
+                                .shortcut_text(ui.ctx().format_shortcut(&save_shortcut)),
+                        )
+                        .clicked()
+                    {
+                        save = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new("Save As...")
+                                .shortcut_text(ui.ctx().format_shortcut(&save_as_shortcut)),
+                        )
+                        .clicked()
+                    {
+                        save_as = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Import Geometry...").clicked() {
+                        import_geometry = true;
+                        ui.close();
+                    }
+                    if ui.button("Import Mesh...").clicked() {
+                        import_mesh = true;
                         ui.close();
                     }
                     if ui
@@ -326,8 +469,23 @@ impl eframe::App for OxiprepApp {
             });
         });
 
+        if new {
+            self.new_project();
+        }
         if open {
-            self.open_dialog();
+            self.open_project_dialog();
+        }
+        if save {
+            self.save_or_save_as();
+        }
+        if save_as {
+            self.save_as_dialog();
+        }
+        if import_geometry {
+            self.import_geometry_dialog();
+        }
+        if import_mesh {
+            self.import_mesh_dialog();
         }
         if close {
             match self.session.close_selected() {

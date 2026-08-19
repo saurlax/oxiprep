@@ -15,6 +15,17 @@ A **project** is the native save unit (new / open / save / save as / close). It 
 
 Imported files are referenced or embedded. Embedding BRep and mesh in the project is required so a `.oxiprep` file opens without the original STEP sitting next to it. Large meshes may be sidecar files next to the project; the spec only requires a defined layout.
 
+`.oxiprep` is a ZIP archive:
+
+```text
+manifest.json
+geometry/{model}/{body}.brep    # one CAD solid
+geometry/{model}/{body}.json    # wire or vertex
+meshes/{model}/{body}.bin       # mesh-only body
+```
+
+`manifest.json` stores format version, model/body names, kinds, and empty `groups`. Materials, case, and results are omitted until those objects exist; unknown future fields must be ignorable. Format `1` is this layout.
+
 Working directory: a project-local folder for mesh scratch, solver decks, and logs. User-settable; default next to the project file.
 
 ## Tree

@@ -51,7 +51,7 @@ Unless the task says otherwise, implement P0 before P1, and do not start L work 
 
 ## Current baseline (not requirements)
 
-The running app already: opens STEP/BRep/STL, lists models/bodies, shows a tessellated viewport with Faces / Edges / Mesh / Vertices toggles, axis clip, standard views, fit all/selection, click pick (body/face/edge/vertex/cell/node) with highlight and Shift/Command modifiers, properties (volume/area/bbox/counts), console, Cmd+O and drag-drop, undo/redo of import, close, create, and delete (selected models, or the bodies that own the current selection). Geometry primitives (point, line, rectangle, disk, box, cylinder, cone, sphere). Edit menu has Undo/Redo/Delete. There is no project file, no extrude, no mesh generator, no groups. Box select is P1. Viewport camera and display are not on the undo stack.
+The running app already: opens STEP/BRep/STL, lists models/bodies, shows a tessellated viewport with Faces / Edges / Mesh / Vertices toggles, axis clip, standard views, fit all/selection, click pick (body/face/edge/vertex/cell/node) with highlight and Shift/Command modifiers, properties (volume/area/bbox/counts), console, native project save/load (`.oxiprep`, BRep and meshes embedded), File New/Open/Save/Save As plus Import Geometry/Mesh, Cmd+O and drag-drop (`.oxiprep` opens a project; CAD/mesh files import), undo/redo of import, close, create, and delete (selected models, or the bodies that own the current selection). Geometry primitives (point, line, rectangle, disk, box, cylinder, cone, sphere). Edit menu has Undo/Redo/Delete. There is no extrude, no mesh generator, no groups. Box select is P1. Viewport camera and display are not on the undo stack.
 
 Gaps against P0 are the rest of the P0 list above.
 

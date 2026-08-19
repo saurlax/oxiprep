@@ -5,6 +5,7 @@ mod geometry;
 mod gpu;
 mod import;
 mod pick;
+mod project;
 mod session;
 mod viewport;
 

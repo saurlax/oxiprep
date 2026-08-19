@@ -158,6 +158,7 @@ pub struct Document {
     pub models: Vec<Model>,
     pub selection: Vec<Selection>,
     pub dirty: bool,
+    pub path: Option<PathBuf>,
 }
 
 pub struct Model {
@@ -225,6 +226,7 @@ impl Document {
             models: Vec::new(),
             selection: Vec::new(),
             dirty: false,
+            path: None,
         }
     }
 
@@ -518,16 +520,7 @@ fn body_from_imported(index: usize, body: import::ImportedBody) -> Result<Body, 
         import::ImportedBody::Triangles {
             positions,
             triangles,
-        } => {
-            let display = DisplayMesh::from_triangles(positions, triangles, DEFAULT_RGB);
-            let triangle_count = display.triangles.len();
-            Ok(Body {
-                name: "Mesh".to_string(),
-                display,
-                stats: BodyStats::Mesh { triangle_count },
-                shape: BodyShape::Mesh,
-            })
-        }
+        } => Ok(body_from_mesh("Mesh", positions, triangles)),
     }
 }
 
@@ -559,6 +552,21 @@ pub fn body_from_edges(name: impl Into<String>, edges: Vec<cadrum::Edge>) -> Bod
         display,
         stats: BodyStats::Wire { edge_count },
         shape: BodyShape::Wire(edges),
+    }
+}
+
+pub fn body_from_mesh(
+    name: impl Into<String>,
+    positions: Vec<[f32; 3]>,
+    triangles: Vec<[u32; 3]>,
+) -> Body {
+    let display = DisplayMesh::from_triangles(positions, triangles, DEFAULT_RGB);
+    let triangle_count = display.triangles.len();
+    Body {
+        name: name.into(),
+        display,
+        stats: BodyStats::Mesh { triangle_count },
+        shape: BodyShape::Mesh,
     }
 }
 
