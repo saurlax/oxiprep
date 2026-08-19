@@ -24,10 +24,10 @@ Selection is the input to measure, groups, BCs, and mesh sizing.
 
 Independent toggles, also on the viewport bar:
 
-- **Faces:** shaded triangles.
-- **Edges:** CAD feature edges. If a body has none (STL), triangle edges are used unless Mesh is already on.
-- **Mesh:** tessellation / mesh triangle edges.
-- **Vertices:** node markers.
+- **Faces:** shaded triangles (CAD display tessellation, or the discrete mesh).
+- **Edges:** CAD feature edges. If a body has none (imported mesh), triangle edges are used unless Mesh is already on.
+- **Mesh:** analysis-mesh or imported-mesh triangle edges. CAD tessellation is not drawn as a mesh.
+- **Vertices:** CAD vertices, or mesh nodes when the body has a discrete mesh.
 
 ## Volume / clip
 

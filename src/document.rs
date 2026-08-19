@@ -341,6 +341,12 @@ fn triangle_normals(
 }
 
 impl Body {
+    /// True when this body has an analysis mesh or is an imported discrete mesh (STL).
+    /// CAD tessellation for display is not a mesh.
+    pub fn has_discrete_mesh(&self) -> bool {
+        self.mesh.is_some() || matches!(self.shape, BodyShape::Mesh)
+    }
+
     pub fn set_analysis_mesh(&mut self, mesh: AnalysisMesh) {
         self.display = mesh.to_display(
             self.display.cad_edges.clone(),
@@ -1037,6 +1043,20 @@ mod tests {
             body.display.triangles.len()
         );
         assert!(matches!(body.shape, BodyShape::Solid(_)));
+        assert!(!body.has_discrete_mesh());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn discrete_mesh_is_analysis_or_imported() {
+        let solid = Solid::cube(DVec3::ZERO, DVec3::ONE);
+        let cad = body_from_solid("box", solid).unwrap();
+        assert!(!cad.has_discrete_mesh());
+        let stl = body_from_mesh(
+            "stl",
+            vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            vec![[0, 1, 2]],
+        );
+        assert!(stl.has_discrete_mesh());
     }
 }

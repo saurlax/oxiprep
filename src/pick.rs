@@ -73,6 +73,9 @@ fn pick_triangle(
     for (mi, model) in document.models.iter().enumerate() {
         for (bi, body) in model.bodies.iter().enumerate() {
             let mesh = &body.display;
+            if mode == PickMode::Cell && !body.has_discrete_mesh() {
+                continue;
+            }
             for (ti, tri) in mesh.triangles.iter().enumerate() {
                 let a = dvec(mesh.positions[tri[0] as usize]);
                 let b = dvec(mesh.positions[tri[1] as usize]);
@@ -153,7 +156,7 @@ fn pick_edge(
                         }
                     }
                 }
-            } else {
+            } else if body.has_discrete_mesh() {
                 for tri in &mesh.triangles {
                     let pts = [
                         mesh.positions[tri[0] as usize],
@@ -234,6 +237,9 @@ fn pick_node(
     let mut best: Option<Selection> = None;
     for (mi, model) in document.models.iter().enumerate() {
         for (bi, body) in model.bodies.iter().enumerate() {
+            if !body.has_discrete_mesh() {
+                continue;
+            }
             if let Some(s) = closest_node(&body.display, camera, rect, pos, clip, mi, bi, best_d) {
                 best_d = s.1;
                 best = Some(s.0);
@@ -387,6 +393,8 @@ mod tests {
             body_hit,
             Some(Selection::Body { model: 0, body: 0 })
         ));
+        assert!(pick(&document, &camera, rect, pos, PickMode::Cell, None).is_none());
+        assert!(pick(&document, &camera, rect, pos, PickMode::Node, None).is_none());
     }
 
     #[test]

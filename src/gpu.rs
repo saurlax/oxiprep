@@ -512,6 +512,7 @@ fn pack_document(
                     });
                 }
             }
+            let discrete = body.has_discrete_mesh();
             if display.edges {
                 if !mesh.cad_edges.is_empty() {
                     for edge in &mesh.cad_edges {
@@ -524,17 +525,17 @@ fn pack_document(
                     }
                 } else if mesh.edges.iter().any(|p| !p[0].is_nan()) {
                     pack_cad_edges(&mut lines, &mesh.edges);
-                } else if !display.mesh {
+                } else if discrete && !display.mesh {
                     pack_triangle_edges(&mut lines, mesh, MESH_EDGE);
                 }
             }
-            if display.mesh {
+            if display.mesh && discrete {
                 pack_triangle_edges(&mut lines, mesh, MESH_EDGE);
             }
             overlay_selected_edges(document, mi, bi, mesh, &mut lines);
             let point_only = mesh.triangles.is_empty() && mesh.cad_edges.is_empty();
             if display.vertices || point_only {
-                let show_nodes = body.mesh.is_some() || mesh.cad_vertices.is_empty();
+                let show_nodes = discrete && (body.mesh.is_some() || mesh.cad_vertices.is_empty());
                 if show_nodes {
                     for (index, p) in mesh.positions.iter().enumerate() {
                         let selected = body_hl || document.is_node_selected(mi, bi, index as u32);

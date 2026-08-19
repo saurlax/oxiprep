@@ -62,7 +62,7 @@ Parameters (global size) appear in Properties. Mesh applies to the selected soli
 
 - Fit all / fit selection
 - Standard views: +X −X +Y −Y +Z −Z, isometric
-- Display toggles: Faces, Edges (CAD feature edges), Mesh (tessellation edges), Vertices
+- Display toggles: Faces, Edges (CAD feature edges), Mesh (analysis or imported mesh edges), Vertices
 - Clip plane: axis X/Y/Z, offset, flip (view filter, not a geometry split)
 - Pick mode is on the viewport bar: Off, Body, Face, Edge, Vertex, Cell, Node
 - Save screenshot
