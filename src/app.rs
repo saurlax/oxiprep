@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::command::CommandError;
 use crate::document::{Body, BodyStats, Document, Model, Selection};
 use crate::geometry::{Axis, CreateKind, CreateTool, Plane};
+use crate::mesh::{MeshKind, MeshTool};
 use crate::session::Session;
 use crate::viewport::Viewport;
 use eframe::CreationContext;
@@ -35,6 +36,7 @@ pub struct OxiprepApp {
     viewport: Viewport,
     console: Vec<String>,
     create: Option<CreateTool>,
+    mesh: Option<MeshTool>,
 }
 
 impl OxiprepApp {
@@ -50,6 +52,7 @@ impl OxiprepApp {
             viewport: Viewport::new(cc.wgpu_render_state.clone()),
             console: Vec::new(),
             create: None,
+            mesh: None,
         }
     }
 
@@ -60,6 +63,7 @@ impl OxiprepApp {
     fn new_project(&mut self) {
         self.session.new_project();
         self.create = None;
+        self.mesh = None;
         self.log("New project.");
     }
 
@@ -76,6 +80,7 @@ impl OxiprepApp {
         match self.session.open_project(path) {
             Ok(message) => {
                 self.create = None;
+                self.mesh = None;
                 self.log(message);
                 if let Some(bbox) = self.session.document.bbox() {
                     self.viewport.fit(bbox);
@@ -192,6 +197,16 @@ impl OxiprepApp {
             Ok(message) => self.log(message),
             Err(err) => self.log(err.message()),
         }
+    }
+
+    fn start_create(&mut self, tool: CreateTool) {
+        self.create = Some(tool);
+        self.mesh = None;
+    }
+
+    fn start_mesh(&mut self, kind: MeshKind) {
+        self.mesh = Some(MeshTool::new(kind, &self.session.document));
+        self.create = None;
     }
 }
 
@@ -381,36 +396,46 @@ impl eframe::App for OxiprepApp {
                 });
                 ui.menu_button("Geometry", |ui| {
                     if ui.button("Point").clicked() {
-                        self.create = Some(CreateTool::new(CreateKind::point()));
+                        self.start_create(CreateTool::new(CreateKind::point()));
                         ui.close();
                     }
                     if ui.button("Line").clicked() {
-                        self.create = Some(CreateTool::line_from_document(&self.session.document));
+                        self.start_create(CreateTool::line_from_document(&self.session.document));
                         ui.close();
                     }
                     if ui.button("Rectangle").clicked() {
-                        self.create = Some(CreateTool::new(CreateKind::rectangle()));
+                        self.start_create(CreateTool::new(CreateKind::rectangle()));
                         ui.close();
                     }
                     if ui.button("Disk").clicked() {
-                        self.create = Some(CreateTool::new(CreateKind::disk()));
+                        self.start_create(CreateTool::new(CreateKind::disk()));
                         ui.close();
                     }
                     ui.separator();
                     if ui.button("Box").clicked() {
-                        self.create = Some(CreateTool::new(CreateKind::r#box()));
+                        self.start_create(CreateTool::new(CreateKind::r#box()));
                         ui.close();
                     }
                     if ui.button("Cylinder").clicked() {
-                        self.create = Some(CreateTool::new(CreateKind::cylinder()));
+                        self.start_create(CreateTool::new(CreateKind::cylinder()));
                         ui.close();
                     }
                     if ui.button("Cone").clicked() {
-                        self.create = Some(CreateTool::new(CreateKind::cone()));
+                        self.start_create(CreateTool::new(CreateKind::cone()));
                         ui.close();
                     }
                     if ui.button("Sphere").clicked() {
-                        self.create = Some(CreateTool::new(CreateKind::sphere()));
+                        self.start_create(CreateTool::new(CreateKind::sphere()));
+                        ui.close();
+                    }
+                });
+                ui.menu_button("Mesh", |ui| {
+                    if ui.button("Surface").clicked() {
+                        self.start_mesh(MeshKind::Surface);
+                        ui.close();
+                    }
+                    if ui.button("Volume").clicked() {
+                        self.start_mesh(MeshKind::Volume);
                         ui.close();
                     }
                 });
@@ -534,6 +559,22 @@ impl eframe::App for OxiprepApp {
                         format!("{n} models")
                     });
                 }
+                let meshes = self
+                    .session
+                    .document
+                    .models
+                    .iter()
+                    .flat_map(|m| m.bodies.iter())
+                    .filter(|b| b.mesh.is_some())
+                    .count();
+                if meshes > 0 {
+                    ui.separator();
+                    ui.label(if meshes == 1 {
+                        "1 mesh".to_string()
+                    } else {
+                        format!("{meshes} meshes")
+                    });
+                }
             });
         });
 
@@ -543,6 +584,7 @@ impl eframe::App for OxiprepApp {
             viewport,
             console,
             create,
+            mesh,
         } = self;
 
         egui::CentralPanel::no_frame()
@@ -557,6 +599,7 @@ impl eframe::App for OxiprepApp {
                             viewport,
                             console,
                             create,
+                            mesh,
                         },
                     );
             });
@@ -568,6 +611,7 @@ struct OxiprepTabs<'a> {
     viewport: &'a mut Viewport,
     console: &'a mut Vec<String>,
     create: &'a mut Option<CreateTool>,
+    mesh: &'a mut Option<MeshTool>,
 }
 
 impl TabViewer for OxiprepTabs<'_> {
@@ -585,9 +629,14 @@ impl TabViewer for OxiprepTabs<'_> {
         match tab {
             Tab::Outliner => outliner_ui(ui, self.session, self.console),
             Tab::Viewport => self.viewport.show(ui, &mut self.session.document),
-            Tab::Properties => {
-                properties_ui(ui, self.session, self.viewport, self.console, self.create)
-            }
+            Tab::Properties => properties_ui(
+                ui,
+                self.session,
+                self.viewport,
+                self.console,
+                self.create,
+                self.mesh,
+            ),
             Tab::Console => console_ui(ui, self.console),
         }
     }
@@ -669,7 +718,12 @@ fn properties_ui(
     viewport: &mut Viewport,
     console: &mut Vec<String>,
     create: &mut Option<CreateTool>,
+    mesh: &mut Option<MeshTool>,
 ) {
+    if mesh.is_some() {
+        mesh_properties_ui(ui, session, viewport, console, mesh);
+        return;
+    }
     if create.is_some() {
         create_properties_ui(ui, session, viewport, console, create);
         return;
@@ -868,8 +922,68 @@ fn body_properties(ui: &mut Ui, model: &Model, body: &Body) {
                 }
                 BodyStats::Vertex => {}
             }
+            if let Some(mesh) = &body.mesh {
+                ui.label("Nodes");
+                ui.label(mesh.nodes.len().to_string());
+                ui.end_row();
+                ui.label("Triangles");
+                ui.label(mesh.triangles.len().to_string());
+                ui.end_row();
+                if !mesh.tets.is_empty() {
+                    ui.label("Tetrahedra");
+                    ui.label(mesh.tets.len().to_string());
+                    ui.end_row();
+                }
+            }
             bbox_rows(ui, body.display.bbox);
         });
+}
+
+fn mesh_properties_ui(
+    ui: &mut Ui,
+    session: &mut Session,
+    viewport: &mut Viewport,
+    console: &mut Vec<String>,
+    mesh: &mut Option<MeshTool>,
+) {
+    let mut cancel = false;
+    if let Some(tool) = mesh.as_mut() {
+        ui.label(tool.title());
+        ui.separator();
+        egui::Grid::new("mesh_props")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Size");
+                ui.add(
+                    egui::DragValue::new(&mut tool.size)
+                        .speed(0.01)
+                        .range(1e-6..=f64::MAX),
+                );
+                ui.end_row();
+            });
+        let can_mesh = tool.valid() && !crate::mesh::mesh_targets(&session.document).is_empty();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(can_mesh, egui::Button::new("Mesh"))
+                .clicked()
+            {
+                match session.mesh_selected(tool.kind, tool.size) {
+                    Ok(message) => {
+                        console.push(message);
+                        viewport.display.mesh = true;
+                    }
+                    Err(err) => console.push(err.message().to_string()),
+                }
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    }
+    if cancel {
+        *mesh = None;
+    }
 }
 
 fn create_properties_ui(

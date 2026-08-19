@@ -51,9 +51,11 @@ fn fs_shaded(in: VsOut) -> @location(0) vec4<f32> {
     if clipped(in.world_pos) {
         discard;
     }
-    let n = normalize(in.normal);
+    let nlen = length(in.normal);
+    let n = select(vec3<f32>(0.0, 0.0, 1.0), in.normal / nlen, nlen > 1e-8);
     let l = normalize(u.light_dir.xyz);
-    let shade = 0.45 + 0.55 * max(dot(n, l), 0.0);
+    // Headlight, two-sided, high ambient — CAE mesh display, not a lit scene.
+    let shade = 0.78 + 0.22 * abs(dot(n, l));
     return vec4<f32>(in.color.rgb * shade, in.color.a);
 }
 

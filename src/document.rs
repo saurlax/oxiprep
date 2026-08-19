@@ -1,5 +1,6 @@
 use crate::import::{self, ImportError, ModelKind};
 use cadrum::{DVec3, Mesh, Solid, Tessellation};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_RGB: [u8; 3] = [0x8C, 0xAD, 0xC4];
@@ -173,6 +174,7 @@ pub struct Body {
     pub display: DisplayMesh,
     pub stats: BodyStats,
     pub shape: BodyShape,
+    pub mesh: Option<AnalysisMesh>,
 }
 
 #[allow(dead_code)]
@@ -200,6 +202,15 @@ pub enum BodyStats {
     },
 }
 
+#[derive(Clone)]
+pub struct AnalysisMesh {
+    pub nodes: Vec<[f32; 3]>,
+    pub triangles: Vec<[u32; 3]>,
+    pub triangle_face_ids: Vec<u64>,
+    pub tets: Vec<[u32; 4]>,
+}
+
+#[derive(Clone)]
 pub struct DisplayMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
@@ -207,6 +218,10 @@ pub struct DisplayMesh {
     pub triangle_colors: Vec<[u8; 3]>,
     /// Per-triangle CAD face id. Zero when the body is mesh-only.
     pub triangle_face_ids: Vec<u64>,
+    /// Cell index for each display triangle. Empty means the triangle index.
+    pub triangle_cells: Vec<u32>,
+    /// True when the triangle is an interior tet face. Empty means none are interior.
+    pub triangle_interior: Vec<bool>,
     /// NaN-separated polylines in the same convention as cadrum.
     pub edges: Vec<[f32; 3]>,
     pub cad_edges: Vec<CadEdge>,
@@ -218,6 +233,121 @@ pub struct DisplayMesh {
 pub struct CadEdge {
     pub id: u64,
     pub points: Vec<[f32; 3]>,
+}
+
+impl AnalysisMesh {
+    pub fn to_display(&self, cad_edges: Vec<CadEdge>, cad_vertices: Vec<[f32; 3]>) -> DisplayMesh {
+        let (triangles, cells, fids, interior) = if self.tets.is_empty() {
+            (
+                self.triangles.clone(),
+                (0..self.triangles.len() as u32).collect(),
+                self.triangle_face_ids.clone(),
+                Vec::new(),
+            )
+        } else {
+            tet_display_faces(self)
+        };
+        let mut display = DisplayMesh::from_triangles(self.nodes.clone(), triangles, DEFAULT_RGB);
+        display.triangle_cells = cells;
+        display.triangle_face_ids = fids;
+        display.triangle_interior = interior;
+        if display.triangle_interior.iter().any(|interior| *interior) {
+            display.normals = triangle_normals(&display.positions, &display.triangles, |ti| {
+                !display.triangle_interior[ti]
+            });
+        }
+        display.cad_edges = cad_edges;
+        display.cad_vertices = cad_vertices;
+        display
+    }
+}
+
+fn tet_display_faces(mesh: &AnalysisMesh) -> (Vec<[u32; 3]>, Vec<u32>, Vec<u64>, Vec<bool>) {
+    let mut face_count: HashMap<[u32; 3], u32> = HashMap::new();
+    let mut surf: HashMap<[u32; 3], u64> = HashMap::new();
+    for (tri, id) in mesh.triangles.iter().zip(mesh.triangle_face_ids.iter()) {
+        surf.insert(face_key(tri[0], tri[1], tri[2]), *id);
+    }
+    for tet in &mesh.tets {
+        for face in tet_faces(*tet) {
+            *face_count
+                .entry(face_key(face[0], face[1], face[2]))
+                .or_insert(0) += 1;
+        }
+    }
+    let mut triangles = Vec::with_capacity(mesh.tets.len() * 4);
+    let mut cells = Vec::with_capacity(mesh.tets.len() * 4);
+    let mut fids = Vec::with_capacity(mesh.tets.len() * 4);
+    let mut interior = Vec::with_capacity(mesh.tets.len() * 4);
+    for (ci, tet) in mesh.tets.iter().enumerate() {
+        for tri in crate::mesh::tet_outward_faces(&mesh.nodes, *tet) {
+            let key = face_key(tri[0], tri[1], tri[2]);
+            let inner = face_count.get(&key).copied().unwrap_or(0) > 1;
+            triangles.push(tri);
+            cells.push(ci as u32);
+            fids.push(if inner {
+                0
+            } else {
+                surf.get(&key).copied().unwrap_or(0)
+            });
+            interior.push(inner);
+        }
+    }
+    (triangles, cells, fids, interior)
+}
+
+fn tet_faces(tet: [u32; 4]) -> [[u32; 3]; 4] {
+    [
+        [tet[0], tet[1], tet[2]],
+        [tet[0], tet[1], tet[3]],
+        [tet[0], tet[2], tet[3]],
+        [tet[1], tet[2], tet[3]],
+    ]
+}
+
+fn face_key(a: u32, b: u32, c: u32) -> [u32; 3] {
+    let mut k = [a, b, c];
+    k.sort_unstable();
+    k
+}
+
+fn triangle_normals(
+    positions: &[[f32; 3]],
+    triangles: &[[u32; 3]],
+    keep: impl Fn(usize) -> bool,
+) -> Vec<[f32; 3]> {
+    let mut normals = vec![[0.0, 0.0, 1.0]; positions.len()];
+    for (ti, tri) in triangles.iter().enumerate() {
+        if !keep(ti) {
+            continue;
+        }
+        let p0 = positions[tri[0] as usize];
+        let p1 = positions[tri[1] as usize];
+        let p2 = positions[tri[2] as usize];
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let n = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+        let n = [n[0] / len, n[1] / len, n[2] / len];
+        for &i in tri {
+            normals[i as usize] = n;
+        }
+    }
+    normals
+}
+
+impl Body {
+    pub fn set_analysis_mesh(&mut self, mesh: AnalysisMesh) {
+        self.display = mesh.to_display(
+            self.display.cad_edges.clone(),
+            self.display.cad_vertices.clone(),
+        );
+        self.mesh = Some(mesh);
+    }
 }
 
 impl Document {
@@ -541,6 +671,7 @@ pub fn body_from_solid(name: impl Into<String>, solid: Solid) -> Result<Body, Im
             edge_count,
         },
         shape: BodyShape::Solid(solid),
+        mesh: None,
     })
 }
 
@@ -552,6 +683,7 @@ pub fn body_from_edges(name: impl Into<String>, edges: Vec<cadrum::Edge>) -> Bod
         display,
         stats: BodyStats::Wire { edge_count },
         shape: BodyShape::Wire(edges),
+        mesh: None,
     }
 }
 
@@ -567,6 +699,7 @@ pub fn body_from_mesh(
         display,
         stats: BodyStats::Mesh { triangle_count },
         shape: BodyShape::Mesh,
+        mesh: None,
     }
 }
 
@@ -580,6 +713,8 @@ pub fn body_from_point(name: impl Into<String>, point: DVec3) -> Body {
             triangles: Vec::new(),
             triangle_colors: Vec::new(),
             triangle_face_ids: Vec::new(),
+            triangle_cells: Vec::new(),
+            triangle_interior: Vec::new(),
             edges: Vec::new(),
             cad_edges: Vec::new(),
             cad_vertices: vec![p],
@@ -587,6 +722,7 @@ pub fn body_from_point(name: impl Into<String>, point: DVec3) -> Body {
         },
         stats: BodyStats::Vertex,
         shape: BodyShape::Vertex(point),
+        mesh: None,
     }
 }
 
@@ -665,12 +801,15 @@ impl DisplayMesh {
             .collect();
         let (cad_edges, cad_vertices) = solid.map(cad_from_solid).unwrap_or_default();
         let bbox = bbox_from_positions(&positions);
+        let triangle_cells: Vec<u32> = (0..triangles.len() as u32).collect();
         Self {
             positions,
             normals,
             triangles,
             triangle_colors,
             triangle_face_ids,
+            triangle_cells,
+            triangle_interior: Vec::new(),
             edges,
             cad_edges,
             cad_vertices,
@@ -699,6 +838,7 @@ impl DisplayMesh {
         }
         let triangle_colors = vec![rgb; triangles.len()];
         let triangle_face_ids = vec![0; triangles.len()];
+        let triangle_cells: Vec<u32> = (0..triangles.len() as u32).collect();
         let bbox = bbox_from_positions(&positions);
         Self {
             positions,
@@ -706,6 +846,8 @@ impl DisplayMesh {
             triangles,
             triangle_colors,
             triangle_face_ids,
+            triangle_cells,
+            triangle_interior: Vec::new(),
             edges: Vec::new(),
             cad_edges: Vec::new(),
             cad_vertices: Vec::new(),
@@ -748,6 +890,8 @@ impl DisplayMesh {
             triangles: Vec::new(),
             triangle_colors: Vec::new(),
             triangle_face_ids: Vec::new(),
+            triangle_cells: Vec::new(),
+            triangle_interior: Vec::new(),
             edges: Vec::new(),
             cad_edges,
             cad_vertices,
@@ -774,6 +918,18 @@ impl DisplayMesh {
     }
 
     fn cell_bbox(&self, index: usize) -> Option<[DVec3; 2]> {
+        if !self.triangle_cells.is_empty() {
+            let mut pts = Vec::new();
+            for (tri, cell) in self.triangles.iter().zip(self.triangle_cells.iter()) {
+                if *cell as usize != index {
+                    continue;
+                }
+                for &i in tri {
+                    pts.push(self.positions[i as usize]);
+                }
+            }
+            return (!pts.is_empty()).then(|| bbox_points(&pts));
+        }
         let tri = self.triangles.get(index)?;
         Some(bbox_points(&[
             self.positions[tri[0] as usize],

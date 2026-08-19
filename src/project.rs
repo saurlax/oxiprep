@@ -9,8 +9,8 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use crate::document::{
-    Body, BodyShape, Document, Model, body_from_edges, body_from_mesh, body_from_point,
-    body_from_solid,
+    AnalysisMesh, Body, BodyShape, Document, Model, body_from_edges, body_from_mesh,
+    body_from_point, body_from_solid,
 };
 use crate::import::ModelKind;
 
@@ -98,7 +98,12 @@ pub fn load(path: &Path) -> Result<Document, ProjectError> {
         let mut bodies = Vec::with_capacity(model.bodies.len());
         for body in &model.bodies {
             let bytes = zip_bytes(&mut zip, &body.file)?;
-            bodies.push(load_body(&body.name, &body.shape, &bytes)?);
+            let mut loaded = load_body(&body.name, &body.shape, &bytes)?;
+            if let Some(mesh_file) = &body.mesh {
+                let mesh_bytes = zip_bytes(&mut zip, mesh_file)?;
+                loaded.set_analysis_mesh(read_analysis_bin(&mesh_bytes)?);
+            }
+            bodies.push(loaded);
         }
         if bodies.is_empty() {
             return Err(ProjectError::Invalid);
@@ -141,10 +146,21 @@ fn write_archive(document: &Document, path: &Path) -> Result<(), ProjectError> {
             zip.start_file(&file_name, options)
                 .map_err(|_| ProjectError::Write)?;
             zip.write_all(&bytes).map_err(|_| ProjectError::Write)?;
+            let mesh = if let Some(analysis) = &body.mesh {
+                let mesh_name = format!("meshes/{mi}/{bi}.bin");
+                zip.start_file(&mesh_name, options)
+                    .map_err(|_| ProjectError::Write)?;
+                zip.write_all(&write_analysis_bin(analysis))
+                    .map_err(|_| ProjectError::Write)?;
+                Some(mesh_name)
+            } else {
+                None
+            };
             bodies.push(ManifestBody {
                 name: body.name.clone(),
                 shape: shape.to_string(),
                 file: file_name,
+                mesh,
             });
         }
         manifest.models.push(ManifestModel {
@@ -307,6 +323,108 @@ fn write_mesh_bin(positions: &[[f32; 3]], triangles: &[[u32; 3]]) -> Vec<u8> {
     bytes
 }
 
+fn write_analysis_bin(mesh: &AnalysisMesh) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MESH_MAGIC);
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&(mesh.nodes.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(mesh.triangles.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(mesh.tets.len() as u32).to_le_bytes());
+    for p in &mesh.nodes {
+        for v in p {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    for t in &mesh.triangles {
+        for i in t {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+    }
+    for id in &mesh.triangle_face_ids {
+        bytes.extend_from_slice(&id.to_le_bytes());
+    }
+    for t in &mesh.tets {
+        for i in t {
+            bytes.extend_from_slice(&i.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+fn read_analysis_bin(bytes: &[u8]) -> Result<AnalysisMesh, ProjectError> {
+    if bytes.len() < 20 || &bytes[..4] != MESH_MAGIC {
+        return Err(ProjectError::Invalid);
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    if version != 2 {
+        return Err(ProjectError::Unsupported);
+    }
+    let n_nodes = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let n_tris = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    let n_tets = u32::from_le_bytes(bytes[16..20].try_into().unwrap()) as usize;
+    let node_bytes = n_nodes.checked_mul(12).ok_or(ProjectError::Invalid)?;
+    let tri_bytes = n_tris.checked_mul(12).ok_or(ProjectError::Invalid)?;
+    let fid_bytes = n_tris.checked_mul(8).ok_or(ProjectError::Invalid)?;
+    let tet_bytes = n_tets.checked_mul(16).ok_or(ProjectError::Invalid)?;
+    let need = 20usize
+        .checked_add(node_bytes)
+        .and_then(|n| n.checked_add(tri_bytes))
+        .and_then(|n| n.checked_add(fid_bytes))
+        .and_then(|n| n.checked_add(tet_bytes))
+        .ok_or(ProjectError::Invalid)?;
+    if bytes.len() < need {
+        return Err(ProjectError::Invalid);
+    }
+    let mut off = 20;
+    let mut nodes = Vec::with_capacity(n_nodes);
+    for _ in 0..n_nodes {
+        nodes.push([
+            f32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()),
+            f32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap()),
+            f32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap()),
+        ]);
+        off += 12;
+    }
+    let mut triangles = Vec::with_capacity(n_tris);
+    for _ in 0..n_tris {
+        let t = [
+            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()),
+            u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap()),
+            u32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap()),
+        ];
+        if t.iter().any(|&i| (i as usize) >= nodes.len()) {
+            return Err(ProjectError::Invalid);
+        }
+        triangles.push(t);
+        off += 12;
+    }
+    let mut triangle_face_ids = Vec::with_capacity(n_tris);
+    for _ in 0..n_tris {
+        triangle_face_ids.push(u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()));
+        off += 8;
+    }
+    let mut tets = Vec::with_capacity(n_tets);
+    for _ in 0..n_tets {
+        let t = [
+            u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap()),
+            u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap()),
+            u32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap()),
+            u32::from_le_bytes(bytes[off + 12..off + 16].try_into().unwrap()),
+        ];
+        if t.iter().any(|&i| (i as usize) >= nodes.len()) {
+            return Err(ProjectError::Invalid);
+        }
+        tets.push(t);
+        off += 16;
+    }
+    Ok(AnalysisMesh {
+        nodes,
+        triangles,
+        triangle_face_ids,
+        tets,
+    })
+}
+
 fn read_mesh_bin(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>), ProjectError> {
     if bytes.len() < 16 || &bytes[..4] != MESH_MAGIC {
         return Err(ProjectError::Invalid);
@@ -409,6 +527,8 @@ struct ManifestBody {
     name: String,
     shape: String,
     file: String,
+    #[serde(default)]
+    mesh: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -554,6 +674,30 @@ mod tests {
             }
             _ => panic!("expected solid"),
         }
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn analysis_mesh_roundtrip() {
+        let path = temp_path("oxiprep_project_tet.oxiprep");
+        let mut session = Session::new();
+        let model = CreateKind::r#box().into_model(&session.document).unwrap();
+        session.create_model(model).unwrap();
+        session
+            .mesh_selected(crate::mesh::MeshKind::Volume, 0.5)
+            .unwrap();
+        let tets = session.document.models[0].bodies[0]
+            .mesh
+            .as_ref()
+            .unwrap()
+            .tets
+            .len();
+        session.save_to(&path).unwrap();
+        session.new_project();
+        session.open_project(&path).unwrap();
+        let mesh = session.document.models[0].bodies[0].mesh.as_ref().unwrap();
+        assert_eq!(mesh.tets.len(), tets);
+        assert!(!mesh.triangles.is_empty());
         let _ = std::fs::remove_file(path);
     }
 }

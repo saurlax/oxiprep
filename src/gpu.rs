@@ -65,6 +65,7 @@ struct SceneKey {
     edges: bool,
     mesh: bool,
     vertices: bool,
+    clip: bool,
     zoom: i32,
 }
 
@@ -129,7 +130,7 @@ impl GpuRenderer {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
+                cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
             depth_stencil: Some(depth_state()),
@@ -206,6 +207,7 @@ impl GpuRenderer {
                 edges: false,
                 mesh: false,
                 vertices: false,
+                clip: false,
                 zoom: i32::MIN,
             },
         }
@@ -320,6 +322,7 @@ impl GpuRenderer {
             edges: display.edges,
             mesh: display.mesh,
             vertices: display.vertices,
+            clip: display.clip,
             zoom,
         };
         let rebuild_solids = key != self.scene_key;
@@ -477,9 +480,9 @@ fn pack_document(
                 .enumerate()
             {
                 let face_id = mesh.triangle_face_ids.get(ti).copied().unwrap_or(0);
-                let selected = body_hl
-                    || document.is_face_selected(mi, bi, face_id)
-                    || document.is_cell_selected(mi, bi, ti as u32);
+                let cell = mesh.triangle_cells.get(ti).copied().unwrap_or(ti as u32);
+                let cell_sel = document.is_cell_selected(mi, bi, cell);
+                let selected = body_hl || document.is_face_selected(mi, bi, face_id) || cell_sel;
                 if !display.faces && !selected {
                     continue;
                 }
@@ -497,11 +500,13 @@ fn pack_document(
                     color[2] as f32 / 255.0,
                     1.0,
                 ];
+                let p0 = mesh.positions[tri[0] as usize];
+                let p1 = mesh.positions[tri[1] as usize];
+                let p2 = mesh.positions[tri[2] as usize];
+                let normal = face_normal(p0, p1, p2);
                 for &idx in tri {
-                    let i = idx as usize;
-                    let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
                     fill.push(GpuVertex {
-                        position: mesh.positions[i],
+                        position: mesh.positions[idx as usize],
                         normal,
                         color,
                     });
@@ -529,14 +534,16 @@ fn pack_document(
             overlay_selected_edges(document, mi, bi, mesh, &mut lines);
             let point_only = mesh.triangles.is_empty() && mesh.cad_edges.is_empty();
             if display.vertices || point_only {
-                for (index, p) in mesh.cad_vertices.iter().enumerate() {
-                    let selected = body_hl || document.is_vertex_selected(mi, bi, index as u32);
-                    let color = if selected { VERTEX_SEL } else { VERTEX };
-                    push_cross(&mut lines, *p, u_axis, v_axis, mark, color);
-                }
-                if mesh.cad_vertices.is_empty() {
+                let show_nodes = body.mesh.is_some() || mesh.cad_vertices.is_empty();
+                if show_nodes {
                     for (index, p) in mesh.positions.iter().enumerate() {
                         let selected = body_hl || document.is_node_selected(mi, bi, index as u32);
+                        let color = if selected { VERTEX_SEL } else { VERTEX };
+                        push_cross(&mut lines, *p, u_axis, v_axis, mark, color);
+                    }
+                } else {
+                    for (index, p) in mesh.cad_vertices.iter().enumerate() {
+                        let selected = body_hl || document.is_vertex_selected(mi, bi, index as u32);
                         let color = if selected { VERTEX_SEL } else { VERTEX };
                         push_cross(&mut lines, *p, u_axis, v_axis, mark, color);
                     }
@@ -653,6 +660,22 @@ fn camera_uv(camera: &Camera) -> ([f32; 3], [f32; 3]) {
         .unwrap_or(DVec3::Y);
     let u = v.cross(dir);
     (dvec(u), dvec(v))
+}
+
+fn face_normal(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3]) -> [f32; 3] {
+    let e1 = sub_f(p1, p0);
+    let e2 = sub_f(p2, p0);
+    let n = [
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0],
+    ];
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    if len < 1e-12 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [n[0] / len, n[1] / len, n[2] / len]
+    }
 }
 
 fn add_f(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {

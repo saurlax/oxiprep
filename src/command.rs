@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::document::{Body, Document, Model, Selection, file_stem};
+use crate::document::{AnalysisMesh, Body, DisplayMesh, Document, Model, Selection, file_stem};
 use crate::import::ImportError;
 
 pub trait Command {
@@ -476,4 +476,105 @@ fn delete_copy(document: &Document, plan: &[Removal]) -> (String, String) {
         "Delete".to_string(),
         format!("Deleted {n} {}.", if n == 1 { "item" } else { "items" }),
     )
+}
+
+struct MeshBackup {
+    model: usize,
+    body: usize,
+    display: DisplayMesh,
+    mesh: Option<AnalysisMesh>,
+}
+
+pub struct MeshBodies {
+    label: String,
+    message: String,
+    kind: crate::mesh::MeshKind,
+    size: f64,
+    targets: Vec<(usize, usize)>,
+    prev: Vec<MeshBackup>,
+    next: Vec<AnalysisMesh>,
+}
+
+impl MeshBodies {
+    pub fn new(
+        document: &Document,
+        kind: crate::mesh::MeshKind,
+        size: f64,
+    ) -> Result<Self, CommandError> {
+        let targets = crate::mesh::mesh_targets(document);
+        if targets.is_empty() {
+            return Err(CommandError::Failed("Select a solid.".to_string()));
+        }
+        let noun = if kind == crate::mesh::MeshKind::Volume {
+            "volume"
+        } else {
+            "surface"
+        };
+        let n = targets.len();
+        let what = if n == 1 { "body" } else { "bodies" };
+        Ok(Self {
+            label: format!("Mesh {noun}"),
+            message: format!("Meshed {n} {what}."),
+            kind,
+            size,
+            targets,
+            prev: Vec::new(),
+            next: Vec::new(),
+        })
+    }
+}
+
+impl Command for MeshBodies {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn execute(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        if self.next.is_empty() {
+            let mut generated = Vec::with_capacity(self.targets.len());
+            for &(mi, bi) in &self.targets {
+                let solid = match document
+                    .models
+                    .get(mi)
+                    .and_then(|m| m.bodies.get(bi))
+                    .map(|b| &b.shape)
+                {
+                    Some(crate::document::BodyShape::Solid(solid)) => solid,
+                    _ => return Err(CommandError::Failed("Select a solid.".to_string())),
+                };
+                generated.push(crate::mesh::generate(solid, self.kind, self.size)?);
+            }
+            for &(mi, bi) in &self.targets {
+                let body = &document.models[mi].bodies[bi];
+                self.prev.push(MeshBackup {
+                    model: mi,
+                    body: bi,
+                    display: body.display.clone(),
+                    mesh: body.mesh.clone(),
+                });
+            }
+            self.next = generated;
+        }
+        for ((mi, bi), mesh) in self.targets.iter().zip(self.next.iter()) {
+            document.models[*mi].bodies[*bi].set_analysis_mesh(mesh.clone());
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        for prev in &self.prev {
+            let body = document
+                .models
+                .get_mut(prev.model)
+                .and_then(|m| m.bodies.get_mut(prev.body))
+                .ok_or_else(|| CommandError::Failed("Could not mesh the solid.".to_string()))?;
+            body.display = prev.display.clone();
+            body.mesh = prev.mesh.clone();
+        }
+        Ok(())
+    }
 }

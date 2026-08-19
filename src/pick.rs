@@ -96,7 +96,7 @@ fn pick_triangle(
                     PickMode::Cell => Selection::Cell {
                         model: mi,
                         body: bi,
-                        index: ti as u32,
+                        index: mesh.triangle_cells.get(ti).copied().unwrap_or(ti as u32),
                     },
                     PickMode::Face => {
                         let id = mesh.triangle_face_ids.get(ti).copied().unwrap_or(0);
@@ -110,7 +110,7 @@ fn pick_triangle(
                             Selection::Cell {
                                 model: mi,
                                 body: bi,
-                                index: ti as u32,
+                                index: mesh.triangle_cells.get(ti).copied().unwrap_or(ti as u32),
                             }
                         }
                     }

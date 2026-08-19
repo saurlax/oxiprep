@@ -21,7 +21,7 @@ Imported files are referenced or embedded. Embedding BRep and mesh in the projec
 manifest.json
 geometry/{model}/{body}.brep    # one CAD solid
 geometry/{model}/{body}.json    # wire or vertex
-meshes/{model}/{body}.bin       # mesh-only body
+meshes/{model}/{body}.bin       # mesh-only body, or analysis mesh on a solid
 ```
 
 `manifest.json` stores format version, model/body names, kinds, and empty `groups`. Materials, case, and results are omitted until those objects exist; unknown future fields must be ignorable. Format `1` is this layout.

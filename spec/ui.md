@@ -51,6 +51,13 @@ Drag-and-drop onto the viewport imports using the same format registry as File â
 
 Parameters appear in Properties. Create appends a new model, or a body on the current model when that option is on.
 
+## Mesh
+
+- Surface
+- Volume
+
+Parameters (global size) appear in Properties. Mesh applies to the selected solids, or all solids if nothing is selected. Volume fills the surface mesh with tetrahedra.
+
 ## View
 
 - Fit all / fit selection

@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use crate::command::{AddBody, Close, Command, CommandError, Create, Delete, History, Import};
+use crate::command::{
+    AddBody, Close, Command, CommandError, Create, Delete, History, Import, MeshBodies,
+};
 use crate::document::Document;
 use crate::project::{self, ProjectError};
 
@@ -78,6 +80,15 @@ impl Session {
 
     pub fn can_delete(&self) -> bool {
         Delete::can_run(&self.document)
+    }
+
+    pub fn mesh_selected(
+        &mut self,
+        kind: crate::mesh::MeshKind,
+        size: f64,
+    ) -> Result<String, CommandError> {
+        let cmd = MeshBodies::new(&self.document, kind, size)?;
+        self.run(Box::new(cmd))
     }
 
     pub fn close_model(&mut self, index: usize) -> Result<String, CommandError> {

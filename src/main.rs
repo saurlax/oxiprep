@@ -4,6 +4,7 @@ mod document;
 mod geometry;
 mod gpu;
 mod import;
+mod mesh;
 mod pick;
 mod project;
 mod session;
