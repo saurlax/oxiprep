@@ -19,9 +19,10 @@ pub fn pick(
     }
     match mode {
         PickMode::Off => None,
-        PickMode::Body | PickMode::Face | PickMode::Cell => {
-            pick_triangle(document, camera, rect, pos, mode, clip)
-        }
+        PickMode::Body => pick_triangle(document, camera, rect, pos, mode, clip)
+            .or_else(|| pick_edge(document, camera, rect, pos, clip).map(as_body))
+            .or_else(|| pick_vertex(document, camera, rect, pos, clip).map(as_body)),
+        PickMode::Face | PickMode::Cell => pick_triangle(document, camera, rect, pos, mode, clip),
         PickMode::Edge => pick_edge(document, camera, rect, pos, clip),
         PickMode::Vertex => pick_vertex(document, camera, rect, pos, clip),
         PickMode::Node => pick_node(document, camera, rect, pos, clip),
@@ -45,6 +46,16 @@ pub fn apply_click(document: &mut Document, hit: Option<Selection>, add: bool, t
             }
         }
         Some(item) => document.selection = vec![item],
+    }
+}
+
+fn as_body(hit: Selection) -> Selection {
+    match hit.body() {
+        Some(body) => Selection::Body {
+            model: hit.model(),
+            body,
+        },
+        None => hit,
     }
 }
 

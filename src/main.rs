@@ -1,6 +1,7 @@
 mod app;
 mod command;
 mod document;
+mod geometry;
 mod gpu;
 mod import;
 mod pick;

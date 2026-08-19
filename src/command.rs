@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::document::{Document, Model, Selection, file_stem};
+use crate::document::{Body, Document, Model, Selection, file_stem};
 use crate::import::ImportError;
 
 pub trait Command {
@@ -14,6 +14,7 @@ pub trait Command {
 pub enum CommandError {
     Import(ImportError),
     NoModel,
+    Failed(String),
 }
 
 impl CommandError {
@@ -21,6 +22,7 @@ impl CommandError {
         match self {
             Self::Import(err) => err.message(),
             Self::NoModel => "Nothing to close.",
+            Self::Failed(text) => text,
         }
     }
 }
@@ -200,4 +202,116 @@ fn opened_message(model: &Model) -> String {
         model.kind.label(),
         if n == 1 { "body" } else { "bodies" }
     )
+}
+
+pub struct Create {
+    label: String,
+    message: String,
+    index: Option<usize>,
+    held: Option<Model>,
+    prev_selection: Vec<Selection>,
+}
+
+impl Create {
+    pub fn new(model: Model) -> Self {
+        let name = model.name.clone();
+        Self {
+            label: format!("Create {name}"),
+            message: format!("Created {name}."),
+            index: None,
+            held: Some(model),
+            prev_selection: Vec::new(),
+        }
+    }
+}
+
+impl Command for Create {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn execute(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let model = self.held.take().ok_or(CommandError::NoModel)?;
+        self.prev_selection = document.selection.clone();
+        let index = *self.index.get_or_insert(document.models.len());
+        document.insert_model(index, model);
+        document.selection = vec![Selection::Model(index)];
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let index = self.index.ok_or(CommandError::NoModel)?;
+        self.held = Some(document.take_model(index).ok_or(CommandError::NoModel)?);
+        document.selection = self.prev_selection.clone();
+        Ok(())
+    }
+}
+
+pub struct AddBody {
+    label: String,
+    message: String,
+    model: usize,
+    body_index: Option<usize>,
+    held: Option<Body>,
+    prev_selection: Vec<Selection>,
+}
+
+impl AddBody {
+    pub fn new(model: usize, body: Body) -> Self {
+        let name = body.name.clone();
+        Self {
+            label: format!("Create {name}"),
+            message: format!("Created {name}."),
+            model,
+            body_index: None,
+            held: Some(body),
+            prev_selection: Vec::new(),
+        }
+    }
+}
+
+impl Command for AddBody {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn execute(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let body = self.held.take().ok_or(CommandError::NoModel)?;
+        self.prev_selection = document.selection.clone();
+        let model = document
+            .models
+            .get_mut(self.model)
+            .ok_or(CommandError::NoModel)?;
+        let index = *self.body_index.get_or_insert(model.bodies.len());
+        let index = index.min(model.bodies.len());
+        model.bodies.insert(index, body);
+        self.body_index = Some(index);
+        document.selection = vec![Selection::Body {
+            model: self.model,
+            body: index,
+        }];
+        Ok(())
+    }
+
+    fn undo(&mut self, document: &mut Document) -> Result<(), CommandError> {
+        let index = self.body_index.ok_or(CommandError::NoModel)?;
+        let model = document
+            .models
+            .get_mut(self.model)
+            .ok_or(CommandError::NoModel)?;
+        if index >= model.bodies.len() {
+            return Err(CommandError::NoModel);
+        }
+        self.held = Some(model.bodies.remove(index));
+        document.selection = self.prev_selection.clone();
+        Ok(())
+    }
 }

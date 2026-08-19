@@ -44,6 +44,13 @@ Drag-and-drop onto the viewport imports using the same format registry as File â
 - Delete (geometry or mesh selection, with clear rules)
 - Preferences (units, tessellation, mouse, working directory)
 
+## Geometry
+
+- Point, Line, Rectangle, Disk
+- Box, Cylinder, Cone, Sphere
+
+Parameters appear in Properties. Create appends a new model, or a body on the current model when that option is on.
+
 ## View
 
 - Fit all / fit selection

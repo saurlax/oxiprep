@@ -9,6 +9,7 @@ pub enum ModelKind {
     Step,
     Brep,
     Stl,
+    Geometry,
 }
 
 impl ModelKind {
@@ -17,6 +18,7 @@ impl ModelKind {
             Self::Step => "STEP",
             Self::Brep => "BRep",
             Self::Stl => "STL",
+            Self::Geometry => "Geometry",
         }
     }
 }
@@ -65,6 +67,7 @@ pub fn load_path(path: &Path) -> Result<ImportedModel, ImportError> {
         ModelKind::Step => load_step(path),
         ModelKind::Brep => load_brep(path),
         ModelKind::Stl => load_stl(path),
+        ModelKind::Geometry => Err(ImportError::Unsupported),
     }
 }
 

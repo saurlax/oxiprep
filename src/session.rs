@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::command::{Close, Command, CommandError, History, Import};
+use crate::command::{AddBody, Close, Command, CommandError, Create, History, Import};
 use crate::document::Document;
 
 pub struct Session {
@@ -26,6 +26,18 @@ impl Session {
 
     pub fn import_path(&mut self, path: &Path) -> Result<String, CommandError> {
         self.run(Box::new(Import::new(path)))
+    }
+
+    pub fn create_model(&mut self, model: crate::document::Model) -> Result<String, CommandError> {
+        self.run(Box::new(Create::new(model)))
+    }
+
+    pub fn add_body(
+        &mut self,
+        model: usize,
+        body: crate::document::Body,
+    ) -> Result<String, CommandError> {
+        self.run(Box::new(AddBody::new(model, body)))
     }
 
     pub fn close_model(&mut self, index: usize) -> Result<String, CommandError> {
@@ -169,5 +181,44 @@ mod tests {
         assert!(!session.can_redo());
         assert!(session.can_undo());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn create_box_undo_redo() {
+        let mut session = Session::new();
+        let model = crate::geometry::CreateKind::r#box()
+            .into_model(&session.document)
+            .unwrap();
+        session.create_model(model).unwrap();
+        assert_eq!(session.document.models.len(), 1);
+        assert_eq!(session.document.models[0].name, "Box");
+        assert!(
+            !session.document.models[0].bodies[0]
+                .display
+                .triangles
+                .is_empty()
+        );
+        session.undo().unwrap();
+        assert!(session.document.models.is_empty());
+        session.redo().unwrap();
+        assert_eq!(session.document.models[0].name, "Box");
+    }
+
+    #[test]
+    fn add_body_to_current_model() {
+        let mut session = Session::new();
+        let model = crate::geometry::CreateKind::r#box()
+            .into_model(&session.document)
+            .unwrap();
+        session.create_model(model).unwrap();
+        let body = crate::geometry::CreateKind::sphere()
+            .into_body(&session.document, 0)
+            .unwrap();
+        session.add_body(0, body).unwrap();
+        assert_eq!(session.document.models.len(), 1);
+        assert_eq!(session.document.models[0].bodies.len(), 2);
+        assert_eq!(session.document.models[0].bodies[1].name, "Sphere");
+        session.undo().unwrap();
+        assert_eq!(session.document.models[0].bodies.len(), 1);
     }
 }

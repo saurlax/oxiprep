@@ -527,7 +527,8 @@ fn pack_document(
                 pack_triangle_edges(&mut lines, mesh, MESH_EDGE);
             }
             overlay_selected_edges(document, mi, bi, mesh, &mut lines);
-            if display.vertices {
+            let point_only = mesh.triangles.is_empty() && mesh.cad_edges.is_empty();
+            if display.vertices || point_only {
                 for (index, p) in mesh.cad_vertices.iter().enumerate() {
                     let selected = body_hl || document.is_vertex_selected(mi, bi, index as u32);
                     let color = if selected { VERTEX_SEL } else { VERTEX };

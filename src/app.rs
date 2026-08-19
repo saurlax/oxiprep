@@ -5,6 +5,7 @@ use std::path::Path;
 
 use crate::command::CommandError;
 use crate::document::{Body, BodyStats, Document, Model, Selection};
+use crate::geometry::{Axis, CreateKind, CreateTool, Plane};
 use crate::session::Session;
 use crate::viewport::Viewport;
 use eframe::CreationContext;
@@ -33,6 +34,7 @@ pub struct OxiprepApp {
     session: Session,
     viewport: Viewport,
     console: Vec<String>,
+    create: Option<CreateTool>,
 }
 
 impl OxiprepApp {
@@ -47,6 +49,7 @@ impl OxiprepApp {
             session: Session::new(),
             viewport: Viewport::new(cc.wgpu_render_state.clone()),
             console: Vec::new(),
+            create: None,
         }
     }
 
@@ -203,6 +206,41 @@ impl eframe::App for OxiprepApp {
                         ui.close();
                     }
                 });
+                ui.menu_button("Geometry", |ui| {
+                    if ui.button("Point").clicked() {
+                        self.create = Some(CreateTool::new(CreateKind::point()));
+                        ui.close();
+                    }
+                    if ui.button("Line").clicked() {
+                        self.create = Some(CreateTool::line_from_document(&self.session.document));
+                        ui.close();
+                    }
+                    if ui.button("Rectangle").clicked() {
+                        self.create = Some(CreateTool::new(CreateKind::rectangle()));
+                        ui.close();
+                    }
+                    if ui.button("Disk").clicked() {
+                        self.create = Some(CreateTool::new(CreateKind::disk()));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Box").clicked() {
+                        self.create = Some(CreateTool::new(CreateKind::r#box()));
+                        ui.close();
+                    }
+                    if ui.button("Cylinder").clicked() {
+                        self.create = Some(CreateTool::new(CreateKind::cylinder()));
+                        ui.close();
+                    }
+                    if ui.button("Cone").clicked() {
+                        self.create = Some(CreateTool::new(CreateKind::cone()));
+                        ui.close();
+                    }
+                    if ui.button("Sphere").clicked() {
+                        self.create = Some(CreateTool::new(CreateKind::sphere()));
+                        ui.close();
+                    }
+                });
                 ui.menu_button("View", |ui| {
                     if ui
                         .add_enabled(has_models, egui::Button::new("Fit All"))
@@ -313,6 +351,7 @@ impl eframe::App for OxiprepApp {
             session,
             viewport,
             console,
+            create,
         } = self;
 
         egui::CentralPanel::no_frame()
@@ -326,6 +365,7 @@ impl eframe::App for OxiprepApp {
                             session,
                             viewport,
                             console,
+                            create,
                         },
                     );
             });
@@ -336,6 +376,7 @@ struct OxiprepTabs<'a> {
     session: &'a mut Session,
     viewport: &'a mut Viewport,
     console: &'a mut Vec<String>,
+    create: &'a mut Option<CreateTool>,
 }
 
 impl TabViewer for OxiprepTabs<'_> {
@@ -353,7 +394,9 @@ impl TabViewer for OxiprepTabs<'_> {
         match tab {
             Tab::Outliner => outliner_ui(ui, self.session, self.console),
             Tab::Viewport => self.viewport.show(ui, &mut self.session.document),
-            Tab::Properties => properties_ui(ui, &self.session.document),
+            Tab::Properties => {
+                properties_ui(ui, self.session, self.viewport, self.console, self.create)
+            }
             Tab::Console => console_ui(ui, self.console),
         }
     }
@@ -418,7 +461,18 @@ fn outliner_ui(ui: &mut Ui, session: &mut Session, console: &mut Vec<String>) {
     }
 }
 
-fn properties_ui(ui: &mut Ui, document: &Document) {
+fn properties_ui(
+    ui: &mut Ui,
+    session: &mut Session,
+    viewport: &mut Viewport,
+    console: &mut Vec<String>,
+    create: &mut Option<CreateTool>,
+) {
+    if create.is_some() {
+        create_properties_ui(ui, session, viewport, console, create);
+        return;
+    }
+    let document = &session.document;
     let Some(item) = document.selection.last().copied() else {
         ui.label("No selection.");
         return;
@@ -605,9 +659,238 @@ fn body_properties(ui: &mut Ui, model: &Model, body: &Body) {
                     ui.label(triangle_count.to_string());
                     ui.end_row();
                 }
+                BodyStats::Wire { edge_count } => {
+                    ui.label("Edges");
+                    ui.label(edge_count.to_string());
+                    ui.end_row();
+                }
+                BodyStats::Vertex => {}
             }
             bbox_rows(ui, body.display.bbox);
         });
+}
+
+fn create_properties_ui(
+    ui: &mut Ui,
+    session: &mut Session,
+    viewport: &mut Viewport,
+    console: &mut Vec<String>,
+    create: &mut Option<CreateTool>,
+) {
+    let mut cancel = false;
+    if let Some(tool) = create.as_mut() {
+        ui.label(tool.kind.title());
+        ui.separator();
+        egui::Grid::new("create_props")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| match &mut tool.kind {
+                CreateKind::Point { p } => {
+                    ui.label("Position");
+                    vec3_edit(ui, p);
+                    ui.end_row();
+                }
+                CreateKind::Line { a, b } => {
+                    ui.label("Start");
+                    vec3_edit(ui, a);
+                    ui.end_row();
+                    ui.label("End");
+                    vec3_edit(ui, b);
+                    ui.end_row();
+                }
+                CreateKind::Rectangle {
+                    plane,
+                    origin,
+                    width,
+                    height,
+                } => {
+                    ui.label("Plane");
+                    plane_edit(ui, plane);
+                    ui.end_row();
+                    ui.label("Origin");
+                    vec3_edit(ui, origin);
+                    ui.end_row();
+                    ui.label("Width");
+                    ui.add(egui::DragValue::new(width).speed(0.1));
+                    ui.end_row();
+                    ui.label("Height");
+                    ui.add(egui::DragValue::new(height).speed(0.1));
+                    ui.end_row();
+                }
+                CreateKind::Disk {
+                    plane,
+                    center,
+                    radius,
+                } => {
+                    ui.label("Plane");
+                    plane_edit(ui, plane);
+                    ui.end_row();
+                    ui.label("Center");
+                    vec3_edit(ui, center);
+                    ui.end_row();
+                    ui.label("Radius");
+                    ui.add(
+                        egui::DragValue::new(radius)
+                            .speed(0.1)
+                            .range(0.0..=f64::MAX),
+                    );
+                    ui.end_row();
+                }
+                CreateKind::Box { origin, size } => {
+                    ui.label("Origin");
+                    vec3_edit(ui, origin);
+                    ui.end_row();
+                    ui.label("Size");
+                    vec3_edit(ui, size);
+                    ui.end_row();
+                }
+                CreateKind::Cylinder {
+                    center,
+                    axis,
+                    radius,
+                    height,
+                } => {
+                    ui.label("Center");
+                    vec3_edit(ui, center);
+                    ui.end_row();
+                    ui.label("Axis");
+                    axis_edit(ui, axis);
+                    ui.end_row();
+                    ui.label("Radius");
+                    ui.add(
+                        egui::DragValue::new(radius)
+                            .speed(0.1)
+                            .range(0.0..=f64::MAX),
+                    );
+                    ui.end_row();
+                    ui.label("Height");
+                    ui.add(
+                        egui::DragValue::new(height)
+                            .speed(0.1)
+                            .range(0.0..=f64::MAX),
+                    );
+                    ui.end_row();
+                }
+                CreateKind::Cone {
+                    center,
+                    axis,
+                    r1,
+                    r2,
+                    height,
+                } => {
+                    ui.label("Center");
+                    vec3_edit(ui, center);
+                    ui.end_row();
+                    ui.label("Axis");
+                    axis_edit(ui, axis);
+                    ui.end_row();
+                    ui.label("Radius 1");
+                    ui.add(egui::DragValue::new(r1).speed(0.1).range(0.0..=f64::MAX));
+                    ui.end_row();
+                    ui.label("Radius 2");
+                    ui.add(egui::DragValue::new(r2).speed(0.1).range(0.0..=f64::MAX));
+                    ui.end_row();
+                    ui.label("Height");
+                    ui.add(
+                        egui::DragValue::new(height)
+                            .speed(0.1)
+                            .range(0.0..=f64::MAX),
+                    );
+                    ui.end_row();
+                }
+                CreateKind::Sphere { center, radius } => {
+                    ui.label("Center");
+                    vec3_edit(ui, center);
+                    ui.end_row();
+                    ui.label("Radius");
+                    ui.add(
+                        egui::DragValue::new(radius)
+                            .speed(0.1)
+                            .range(0.0..=f64::MAX),
+                    );
+                    ui.end_row();
+                }
+            });
+        let has_model = session.document.selected_model_index().is_some();
+        if !has_model {
+            tool.add_to_current = false;
+        }
+        ui.add_enabled(
+            has_model,
+            egui::Checkbox::new(&mut tool.add_to_current, "Add to current model"),
+        );
+        ui.horizontal(|ui| {
+            let can_create = tool.kind.valid();
+            if ui
+                .add_enabled(can_create, egui::Button::new("Create"))
+                .clicked()
+            {
+                apply_create(session, viewport, console, tool);
+            }
+            if ui.button("Cancel").clicked() {
+                cancel = true;
+            }
+        });
+    }
+    if cancel {
+        *create = None;
+    }
+}
+
+fn apply_create(
+    session: &mut Session,
+    viewport: &mut Viewport,
+    console: &mut Vec<String>,
+    tool: &CreateTool,
+) {
+    let add_to = tool
+        .add_to_current
+        .then(|| session.document.selected_model_index())
+        .flatten();
+    let result = if let Some(model) = add_to {
+        match tool.kind.into_body(&session.document, model) {
+            Ok(body) => session.add_body(model, body),
+            Err(err) => Err(err),
+        }
+    } else {
+        match tool.kind.into_model(&session.document) {
+            Ok(model) => session.create_model(model),
+            Err(err) => Err(err),
+        }
+    };
+    match result {
+        Ok(message) => {
+            console.push(message);
+            if let Some(bbox) = session.document.selection_bbox() {
+                viewport.fit(bbox);
+            }
+        }
+        Err(err) => console.push(err.message().to_string()),
+    }
+}
+
+fn vec3_edit(ui: &mut Ui, v: &mut [f64; 3]) {
+    ui.horizontal(|ui| {
+        ui.add(egui::DragValue::new(&mut v[0]).speed(0.1));
+        ui.add(egui::DragValue::new(&mut v[1]).speed(0.1));
+        ui.add(egui::DragValue::new(&mut v[2]).speed(0.1));
+    });
+}
+
+fn axis_edit(ui: &mut Ui, axis: &mut Axis) {
+    ui.horizontal(|ui| {
+        ui.selectable_value(axis, Axis::X, Axis::X.label());
+        ui.selectable_value(axis, Axis::Y, Axis::Y.label());
+        ui.selectable_value(axis, Axis::Z, Axis::Z.label());
+    });
+}
+
+fn plane_edit(ui: &mut Ui, plane: &mut Plane) {
+    ui.horizontal(|ui| {
+        ui.selectable_value(plane, Plane::XY, Plane::XY.label());
+        ui.selectable_value(plane, Plane::YZ, Plane::YZ.label());
+        ui.selectable_value(plane, Plane::XZ, Plane::XZ.label());
+    });
 }
 
 fn bbox_rows(ui: &mut Ui, bbox: [DVec3; 2]) {

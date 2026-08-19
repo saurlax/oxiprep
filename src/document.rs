@@ -58,6 +58,19 @@ impl Selection {
         }
     }
 
+    pub fn body(self) -> Option<usize> {
+        match self {
+            Self::Model(_) => None,
+            Self::Body { body, .. }
+            | Self::Face { body, .. }
+            | Self::Edge { body, .. }
+            | Self::Vertex { body, .. }
+            | Self::Node { body, .. }
+            | Self::Cell { body, .. }
+            | Self::MeshEdge { body, .. } => Some(body),
+        }
+    }
+
     fn remap_after_remove(self, removed: usize) -> Option<Self> {
         let m = self.model();
         if m == removed {
@@ -111,8 +124,15 @@ pub struct Body {
     pub name: String,
     pub display: DisplayMesh,
     pub stats: BodyStats,
-    #[allow(dead_code)]
-    pub solid: Option<Solid>,
+    pub shape: BodyShape,
+}
+
+#[allow(dead_code)]
+pub enum BodyShape {
+    Solid(Solid),
+    Wire(Vec<cadrum::Edge>),
+    Vertex(DVec3),
+    Mesh,
 }
 
 pub enum BodyStats {
@@ -123,6 +143,10 @@ pub enum BodyStats {
         face_count: usize,
         edge_count: usize,
     },
+    Wire {
+        edge_count: usize,
+    },
+    Vertex,
     Mesh {
         triangle_count: usize,
     },
@@ -203,6 +227,21 @@ impl Document {
             .filter_map(|s| s.remap_after_remove(index))
             .collect();
         Some(model)
+    }
+
+    pub fn unique_model_name(&self, base: &str) -> String {
+        unique_name(self.models.iter().map(|m| m.name.as_str()), base)
+    }
+
+    pub fn unique_body_name(&self, model: usize, base: &str) -> String {
+        let Some(m) = self.models.get(model) else {
+            return base.to_string();
+        };
+        unique_name(m.bodies.iter().map(|b| b.name.as_str()), base)
+    }
+
+    pub fn selected_model_index(&self) -> Option<usize> {
+        self.selection.first().map(|s| s.model())
     }
 
     pub(crate) fn push_imported(
@@ -403,23 +442,7 @@ pub(crate) fn file_stem(path: &Path) -> String {
 fn body_from_imported(index: usize, body: import::ImportedBody) -> Result<Body, ImportError> {
     match body {
         import::ImportedBody::Solid(solid) => {
-            let mesh = Solid::mesh(std::iter::once(&solid), Tessellation::default())
-                .map_err(|_| ImportError::Tessellate)?;
-            let display = DisplayMesh::from_cadrum(&mesh, Some(&solid));
-            let face_count = solid.iter_face().count();
-            let edge_count = solid.iter_edge().count();
-            Ok(Body {
-                name: format!("Solid {}", index + 1),
-                display,
-                stats: BodyStats::Solid {
-                    volume: solid.volume(),
-                    area: solid.area(),
-                    center: solid.center(),
-                    face_count,
-                    edge_count,
-                },
-                solid: Some(solid),
-            })
+            body_from_solid(format!("Solid {}", index + 1), solid)
         }
         import::ImportedBody::Triangles {
             positions,
@@ -431,9 +454,75 @@ fn body_from_imported(index: usize, body: import::ImportedBody) -> Result<Body, 
                 name: "Mesh".to_string(),
                 display,
                 stats: BodyStats::Mesh { triangle_count },
-                solid: None,
+                shape: BodyShape::Mesh,
             })
         }
+    }
+}
+
+pub fn body_from_solid(name: impl Into<String>, solid: Solid) -> Result<Body, ImportError> {
+    let mesh = Solid::mesh(std::iter::once(&solid), Tessellation::default())
+        .map_err(|_| ImportError::Tessellate)?;
+    let display = DisplayMesh::from_cadrum(&mesh, Some(&solid));
+    let face_count = solid.iter_face().count();
+    let edge_count = solid.iter_edge().count();
+    Ok(Body {
+        name: name.into(),
+        display,
+        stats: BodyStats::Solid {
+            volume: solid.volume(),
+            area: solid.area(),
+            center: solid.center(),
+            face_count,
+            edge_count,
+        },
+        shape: BodyShape::Solid(solid),
+    })
+}
+
+pub fn body_from_edges(name: impl Into<String>, edges: Vec<cadrum::Edge>) -> Body {
+    let display = DisplayMesh::from_edges(&edges);
+    let edge_count = edges.len();
+    Body {
+        name: name.into(),
+        display,
+        stats: BodyStats::Wire { edge_count },
+        shape: BodyShape::Wire(edges),
+    }
+}
+
+pub fn body_from_point(name: impl Into<String>, point: DVec3) -> Body {
+    let p = [point.x as f32, point.y as f32, point.z as f32];
+    Body {
+        name: name.into(),
+        display: DisplayMesh {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            triangles: Vec::new(),
+            triangle_colors: Vec::new(),
+            triangle_face_ids: Vec::new(),
+            edges: Vec::new(),
+            cad_edges: Vec::new(),
+            cad_vertices: vec![p],
+            bbox: point_bbox(p),
+        },
+        stats: BodyStats::Vertex,
+        shape: BodyShape::Vertex(point),
+    }
+}
+
+fn unique_name<'a>(existing: impl Iterator<Item = &'a str>, base: &str) -> String {
+    let used: Vec<&str> = existing.collect();
+    if !used.iter().any(|n| *n == base) {
+        return base.to_string();
+    }
+    let mut n = 2;
+    loop {
+        let name = format!("{base} {n}");
+        if !used.iter().any(|u| *u == name) {
+            return name;
+        }
+        n += 1;
     }
 }
 
@@ -541,6 +630,48 @@ impl DisplayMesh {
             edges: Vec::new(),
             cad_edges: Vec::new(),
             cad_vertices: Vec::new(),
+            bbox,
+        }
+    }
+
+    fn from_edges(edges: &[cadrum::Edge]) -> Self {
+        let mut cad_edges = Vec::new();
+        let mut cad_vertices = Vec::new();
+        let mut pts = Vec::new();
+        for edge in edges {
+            let points: Vec<[f32; 3]> = edge
+                .approximation_segments(Tessellation::default())
+                .into_iter()
+                .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+                .collect();
+            if let Some(&p) = points.first() {
+                push_unique_vertex(&mut cad_vertices, p);
+            }
+            if let Some(&p) = points.last() {
+                push_unique_vertex(&mut cad_vertices, p);
+            }
+            pts.extend_from_slice(&points);
+            if points.len() >= 2 {
+                cad_edges.push(CadEdge {
+                    id: edge.id(),
+                    points,
+                });
+            }
+        }
+        let bbox = if pts.is_empty() {
+            [DVec3::ZERO, DVec3::ZERO]
+        } else {
+            bbox_from_positions(&pts)
+        };
+        Self {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            triangles: Vec::new(),
+            triangle_colors: Vec::new(),
+            triangle_face_ids: Vec::new(),
+            edges: Vec::new(),
+            cad_edges,
+            cad_vertices,
             bbox,
         }
     }
@@ -670,7 +801,7 @@ mod tests {
             body.display.triangle_face_ids.len(),
             body.display.triangles.len()
         );
-        assert!(body.solid.is_some());
+        assert!(matches!(body.shape, BodyShape::Solid(_)));
         let _ = std::fs::remove_file(path);
     }
 }
