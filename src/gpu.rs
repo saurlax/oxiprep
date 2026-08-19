@@ -1,5 +1,5 @@
 use crate::document::{Document, Selection};
-use crate::viewport::{Camera, FOV_Y};
+use crate::viewport::{Camera, DisplayOptions, FOV_Y};
 use cadrum::DVec3;
 use eframe::egui::{self, Color32, TextureId};
 use eframe::egui_wgpu::RenderState;
@@ -9,6 +9,9 @@ use std::num::NonZeroU64;
 
 const HIGHLIGHT: [u8; 3] = [0xE8, 0xA3, 0x3C];
 const EDGE: [f32; 4] = [0.12, 0.12, 0.12, 1.0];
+const MESH_EDGE: [f32; 4] = [0.38, 0.38, 0.38, 1.0];
+const VERTEX: [f32; 4] = [0.15, 0.15, 0.15, 1.0];
+const VERTEX_SEL: [f32; 4] = [0.91, 0.64, 0.24, 1.0];
 const GRID: [f32; 4] = [0.45, 0.45, 0.45, 0.35];
 const AXIS_X: [f32; 4] = [0.70, 0.28, 0.28, 0.7];
 const AXIS_Y: [f32; 4] = [0.28, 0.55, 0.28, 0.7];
@@ -26,6 +29,9 @@ struct GpuVertex {
 struct GpuUniforms {
     view_proj: [[f32; 4]; 4],
     light_dir: [f32; 4],
+    clip_plane: [f32; 4],
+    clip_enabled: f32,
+    _pad: [f32; 3],
 }
 
 pub struct GpuRenderer {
@@ -46,7 +52,19 @@ pub struct GpuRenderer {
     depth_view: Option<wgpu::TextureView>,
     texture_id: Option<TextureId>,
     size: [u32; 2],
-    scene_key: (usize, Option<Selection>, usize),
+    scene_key: SceneKey,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SceneKey {
+    models: usize,
+    selection: Option<Selection>,
+    tris: usize,
+    faces: bool,
+    edges: bool,
+    mesh: bool,
+    vertices: bool,
+    zoom: i32,
 }
 
 impl GpuRenderer {
@@ -179,7 +197,16 @@ impl GpuRenderer {
             depth_view: None,
             texture_id: None,
             size: [0, 0],
-            scene_key: (0, None, 0),
+            scene_key: SceneKey {
+                models: usize::MAX,
+                selection: None,
+                tris: 0,
+                faces: false,
+                edges: false,
+                mesh: false,
+                vertices: false,
+                zoom: i32::MIN,
+            },
         }
     }
 
@@ -189,14 +216,16 @@ impl GpuRenderer {
         rect: egui::Rect,
         camera: &Camera,
         document: &Document,
+        display: &DisplayOptions,
+        clip: Option<[f32; 4]>,
         bg: Color32,
     ) {
         let ppp = ui.ctx().pixels_per_point();
         let w = (rect.width() * ppp).round().max(1.0) as u32;
         let h = (rect.height() * ppp).round().max(1.0) as u32;
         self.ensure_target(w, h);
-        self.sync_scene(document, camera);
-        self.draw(camera, w, h, bg);
+        self.sync_scene(document, camera, display);
+        self.draw(camera, w, h, clip, bg);
 
         if let Some(id) = self.texture_id {
             ui.painter().image(
@@ -270,19 +299,33 @@ impl GpuRenderer {
         self.size = [w, h];
     }
 
-    fn sync_scene(&mut self, document: &Document, camera: &Camera) {
+    fn sync_scene(&mut self, document: &Document, camera: &Camera, display: &DisplayOptions) {
         let tri_count: usize = document
             .models
             .iter()
             .flat_map(|m| m.bodies.iter())
             .map(|b| b.display.triangles.len())
             .sum();
-        let key = (document.models.len(), document.selection, tri_count);
+        let zoom = if display.vertices {
+            (camera.distance.log2() * 8.0).round() as i32
+        } else {
+            0
+        };
+        let key = SceneKey {
+            models: document.models.len(),
+            selection: document.selection,
+            tris: tri_count,
+            faces: display.faces,
+            edges: display.edges,
+            mesh: display.mesh,
+            vertices: display.vertices,
+            zoom,
+        };
         let rebuild_solids = key != self.scene_key;
         self.scene_key = key;
 
         if rebuild_solids {
-            let (fill, lines) = pack_document(document);
+            let (fill, lines) = pack_document(document, camera, display);
             self.fill_count = fill.len() as u32;
             self.line_count = lines.len() as u32;
             let device = &self.render_state.device;
@@ -295,12 +338,19 @@ impl GpuRenderer {
         self.grid_buf = vertex_buf(&self.render_state.device, "grid", &grid);
     }
 
-    fn draw(&mut self, camera: &Camera, w: u32, h: u32, bg: Color32) {
+    fn draw(&mut self, camera: &Camera, w: u32, h: u32, clip: Option<[f32; 4]>, bg: Color32) {
         let aspect = w as f32 / h.max(1) as f32;
         let (view_proj, light) = camera_matrices(camera, aspect);
+        let (clip_plane, clip_enabled) = match clip {
+            Some(p) => (p, 1.0),
+            None => ([0.0, 0.0, 1.0, 0.0], 0.0),
+        };
         let uniforms = GpuUniforms {
             view_proj,
             light_dir: [light[0], light[1], light[2], 0.0],
+            clip_plane,
+            clip_enabled,
+            _pad: [0.0; 3],
         };
         self.render_state
             .queue
@@ -406,53 +456,116 @@ fn vertex_buf(device: &wgpu::Device, label: &str, verts: &[GpuVertex]) -> wgpu::
     })
 }
 
-fn pack_document(document: &Document) -> (Vec<GpuVertex>, Vec<GpuVertex>) {
+fn pack_document(
+    document: &Document,
+    camera: &Camera,
+    display: &DisplayOptions,
+) -> (Vec<GpuVertex>, Vec<GpuVertex>) {
     let mut fill = Vec::new();
     let mut lines = Vec::new();
+    let (u_axis, v_axis) = camera_uv(camera);
+    let mark = (camera.distance * 0.008).clamp(1e-4, 1e6) as f32;
     for (mi, model) in document.models.iter().enumerate() {
         for (bi, body) in model.bodies.iter().enumerate() {
             let selected = document.is_body_selected(mi, bi)
                 || document.selection == Some(Selection::Model(mi));
             let mesh = &body.display;
-            for (tri, rgb) in mesh.triangles.iter().zip(mesh.triangle_colors.iter()) {
-                let mut color = *rgb;
-                if selected {
-                    color = [
-                        ((color[0] as u16 + HIGHLIGHT[0] as u16) / 2) as u8,
-                        ((color[1] as u16 + HIGHLIGHT[1] as u16) / 2) as u8,
-                        ((color[2] as u16 + HIGHLIGHT[2] as u16) / 2) as u8,
+            if display.faces {
+                for (tri, rgb) in mesh.triangles.iter().zip(mesh.triangle_colors.iter()) {
+                    let mut color = *rgb;
+                    if selected {
+                        color = [
+                            ((color[0] as u16 + HIGHLIGHT[0] as u16) / 2) as u8,
+                            ((color[1] as u16 + HIGHLIGHT[1] as u16) / 2) as u8,
+                            ((color[2] as u16 + HIGHLIGHT[2] as u16) / 2) as u8,
+                        ];
+                    }
+                    let color = [
+                        color[0] as f32 / 255.0,
+                        color[1] as f32 / 255.0,
+                        color[2] as f32 / 255.0,
+                        1.0,
                     ];
-                }
-                let color = [
-                    color[0] as f32 / 255.0,
-                    color[1] as f32 / 255.0,
-                    color[2] as f32 / 255.0,
-                    1.0,
-                ];
-                for &idx in tri {
-                    let i = idx as usize;
-                    let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
-                    fill.push(GpuVertex {
-                        position: mesh.positions[i],
-                        normal,
-                        color,
-                    });
+                    for &idx in tri {
+                        let i = idx as usize;
+                        let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+                        fill.push(GpuVertex {
+                            position: mesh.positions[i],
+                            normal,
+                            color,
+                        });
+                    }
                 }
             }
-            let mut prev: Option<[f32; 3]> = None;
-            for p in &mesh.edges {
-                if p[0].is_nan() {
-                    prev = None;
-                    continue;
+            let has_cad_edges = mesh.edges.iter().any(|p| !p[0].is_nan());
+            if display.edges {
+                if has_cad_edges {
+                    pack_cad_edges(&mut lines, &mesh.edges);
+                } else if !display.mesh {
+                    pack_triangle_edges(&mut lines, mesh, MESH_EDGE);
                 }
-                if let Some(a) = prev {
-                    push_line(&mut lines, a, *p, EDGE);
+            }
+            if display.mesh {
+                pack_triangle_edges(&mut lines, mesh, MESH_EDGE);
+            }
+            if display.vertices {
+                let color = if selected { VERTEX_SEL } else { VERTEX };
+                for p in &mesh.positions {
+                    let u = [u_axis[0] * mark, u_axis[1] * mark, u_axis[2] * mark];
+                    let v = [v_axis[0] * mark, v_axis[1] * mark, v_axis[2] * mark];
+                    push_line(&mut lines, sub_f(*p, u), add_f(*p, u), color);
+                    push_line(&mut lines, sub_f(*p, v), add_f(*p, v), color);
                 }
-                prev = Some(*p);
             }
         }
     }
     (fill, lines)
+}
+
+fn pack_cad_edges(lines: &mut Vec<GpuVertex>, edges: &[[f32; 3]]) {
+    let mut prev: Option<[f32; 3]> = None;
+    for p in edges {
+        if p[0].is_nan() {
+            prev = None;
+            continue;
+        }
+        if let Some(a) = prev {
+            push_line(lines, a, *p, EDGE);
+        }
+        prev = Some(*p);
+    }
+}
+
+fn pack_triangle_edges(
+    lines: &mut Vec<GpuVertex>,
+    mesh: &crate::document::DisplayMesh,
+    color: [f32; 4],
+) {
+    for tri in &mesh.triangles {
+        let p0 = mesh.positions[tri[0] as usize];
+        let p1 = mesh.positions[tri[1] as usize];
+        let p2 = mesh.positions[tri[2] as usize];
+        push_line(lines, p0, p1, color);
+        push_line(lines, p1, p2, color);
+        push_line(lines, p2, p0, color);
+    }
+}
+
+fn camera_uv(camera: &Camera) -> ([f32; 3], [f32; 3]) {
+    let dir = camera.view_dir();
+    let v = (DVec3::Z - dir * DVec3::Z.dot(dir))
+        .try_normalize()
+        .unwrap_or(DVec3::Y);
+    let u = v.cross(dir);
+    (dvec(u), dvec(v))
+}
+
+fn add_f(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn sub_f(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 fn pack_grid(camera: &Camera, lines: &mut Vec<GpuVertex>) {

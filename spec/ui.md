@@ -48,9 +48,8 @@ Drag-and-drop onto the viewport imports using the same format registry as File �
 
 - Fit all / fit selection
 - Standard views: +X −X +Y −Y +Z −Z, isometric
-- Display: shaded, shaded+edges, wireframe, nodes
-- Geometry filters: points, curves, faces (toggle)
-- Mesh filters: nodes, surface, volume (volume via clip)
+- Display toggles: Faces, Edges (CAD feature edges), Mesh (tessellation edges), Vertices
+- Clip plane: axis X/Y/Z, offset, flip (view filter, not a geometry split)
 - Save screenshot
 - Background / appearance (egui defaults; no custom theme unless requested)
 

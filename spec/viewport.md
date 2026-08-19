@@ -18,9 +18,18 @@ Box / rubber-band select for mesh nodes and cells. Click-add and click-remove (m
 
 Picking must return stable IDs, not only display triangles.
 
-## Volume mesh display
+## Display
 
-Clip the volume with an interactive plane so interior elements are visible. Optional: show only one side of the plane. This is a view filter, not a geometry split.
+Independent toggles, also on the viewport bar:
+
+- **Faces:** shaded triangles.
+- **Edges:** CAD feature edges. If a body has none (STL), triangle edges are used unless Mesh is already on.
+- **Mesh:** tessellation / mesh triangle edges.
+- **Vertices:** node markers.
+
+## Volume / clip
+
+Clip with an axis-aligned plane through the model bounds so the interior is visible. Axis, offset, and flip. This is a view filter, not a geometry split. An interactive free plane for volume meshes can come later.
 
 ## Highlight and attributes
 

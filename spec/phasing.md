@@ -13,7 +13,7 @@ Unless the task says otherwise, implement P0 before P1, and do not start L work 
 - Geometry primitives (point, line, rectangle, disk, box, cylinder, cone, sphere)
 - Face from closed edges; extrude; delete geometry
 - Pick: geometry vertex/edge/face/body; mesh node/cell
-- Standard views, fit, shaded / wireframe / edges
+- Standard views, fit, Faces / Edges / Mesh / Vertices display, axis clip plane
 - Surface + tet volume mesh with global size
 - Mesh sets from selection
 - Measure distance
@@ -28,7 +28,7 @@ Unless the task says otherwise, implement P0 before P1, and do not start L work 
 - Geometry groups; mesh set merge/subtract; box select
 - Local mesh size; triangle/quad-dominant surface options
 - Node merge / unused node removal; create/delete faces
-- Volume clip display
+- Free clip plane widget for volume meshes
 - Dimension queries (length, area, volume, angle, radius)
 - Materials + BC types + INP/CGNS-oriented export
 - Units in UI
@@ -51,7 +51,7 @@ Unless the task says otherwise, implement P0 before P1, and do not start L work 
 
 ## Current baseline (not requirements)
 
-The running app already: opens STEP/BRep/STL, lists models/bodies, shows a tessellated viewport, fit all/selection, properties (volume/area/bbox/counts), console, Cmd+O and drag-drop. Edit menu is empty. There is no project file, no CAD create, no mesh generator, no groups.
+The running app already: opens STEP/BRep/STL, lists models/bodies, shows a tessellated viewport with Faces / Edges / Mesh / Vertices toggles, axis clip, standard views, fit all/selection, properties (volume/area/bbox/counts), console, Cmd+O and drag-drop. Edit menu is empty. There is no project file, no CAD create, no mesh generator, no groups.
 
 Gaps against P0 are the rest of the P0 list above.
 

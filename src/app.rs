@@ -121,6 +121,8 @@ impl eframe::App for OxiprepApp {
         let mut quit = false;
         let mut fit_all = false;
         let mut fit_sel = false;
+        let mut look: Option<DVec3> = None;
+        let mut look_iso = false;
         let has_selection = self.document.selection.is_some();
         let has_models = !self.document.is_empty();
 
@@ -166,6 +168,42 @@ impl eframe::App for OxiprepApp {
                         fit_sel = true;
                         ui.close();
                     }
+                    ui.separator();
+                    if ui.button("+X").clicked() {
+                        look = Some(DVec3::X);
+                        ui.close();
+                    }
+                    if ui.button("-X").clicked() {
+                        look = Some(-DVec3::X);
+                        ui.close();
+                    }
+                    if ui.button("+Y").clicked() {
+                        look = Some(DVec3::Y);
+                        ui.close();
+                    }
+                    if ui.button("-Y").clicked() {
+                        look = Some(-DVec3::Y);
+                        ui.close();
+                    }
+                    if ui.button("+Z").clicked() {
+                        look = Some(DVec3::Z);
+                        ui.close();
+                    }
+                    if ui.button("-Z").clicked() {
+                        look = Some(-DVec3::Z);
+                        ui.close();
+                    }
+                    if ui.button("Isometric").clicked() {
+                        look_iso = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.toggle_value(&mut self.viewport.display.faces, "Faces");
+                    ui.toggle_value(&mut self.viewport.display.edges, "Edges");
+                    ui.toggle_value(&mut self.viewport.display.mesh, "Mesh");
+                    ui.toggle_value(&mut self.viewport.display.vertices, "Vertices");
+                    ui.separator();
+                    ui.toggle_value(&mut self.viewport.display.clip, "Clip");
                 });
             });
         });
@@ -191,6 +229,12 @@ impl eframe::App for OxiprepApp {
             if let Some(bbox) = self.document.selection_bbox() {
                 self.viewport.fit(bbox);
             }
+        }
+        if let Some(dir) = look {
+            self.viewport.look_along(dir);
+        }
+        if look_iso {
+            self.viewport.look_isometric();
         }
 
         egui::Panel::bottom("status_bar").show(ui, |ui| {
