@@ -123,7 +123,7 @@ impl eframe::App for OxiprepApp {
         let mut fit_sel = false;
         let mut look: Option<DVec3> = None;
         let mut look_iso = false;
-        let has_selection = self.document.selection.is_some();
+        let has_selection = !self.document.selection.is_empty();
         let has_models = !self.document.is_empty();
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
@@ -313,7 +313,7 @@ fn outliner_ui(ui: &mut Ui, document: &mut Document, console: &mut Vec<String>) 
         for mi in 0..document.models.len() {
             let name = document.models[mi].name.clone();
             let n_bodies = document.models[mi].bodies.len();
-            let model_selected = matches!(document.selection, Some(Selection::Model(m)) if m == mi);
+            let model_selected = document.selection.iter().any(|s| s.model() == mi);
             let header = egui::collapsing_header::CollapsingHeader::new(if model_selected {
                 egui::RichText::new(&name).strong()
             } else {
@@ -327,10 +327,10 @@ fn outliner_ui(ui: &mut Ui, document: &mut Document, console: &mut Vec<String>) 
                     let selected = document.is_body_selected(mi, bi);
                     let response = ui.selectable_label(selected, body_name);
                     if response.clicked() || response.secondary_clicked() {
-                        document.selection = Some(Selection::Body {
+                        document.selection = vec![Selection::Body {
                             model: mi,
                             body: bi,
-                        });
+                        }];
                     }
                     response.context_menu(|ui| {
                         if ui.button("Close").clicked() {
@@ -341,7 +341,7 @@ fn outliner_ui(ui: &mut Ui, document: &mut Document, console: &mut Vec<String>) 
                 }
             });
             if header.header_response.clicked() || header.header_response.secondary_clicked() {
-                document.selection = Some(Selection::Model(mi));
+                document.selection = vec![Selection::Model(mi)];
             }
             header.header_response.context_menu(|ui| {
                 if ui.button("Close").clicked() {
@@ -360,25 +360,127 @@ fn outliner_ui(ui: &mut Ui, document: &mut Document, console: &mut Vec<String>) 
 }
 
 fn properties_ui(ui: &mut Ui, document: &Document) {
-    match document.selection {
-        None => {
-            ui.label("No selection.");
-        }
-        Some(Selection::Model(mi)) => {
+    let Some(item) = document.selection.last().copied() else {
+        ui.label("No selection.");
+        return;
+    };
+    if document.selection.len() > 1 {
+        ui.label(format!("{} selected", document.selection.len()));
+        ui.separator();
+    }
+    match item {
+        Selection::Model(mi) => {
             if let Some(model) = document.models.get(mi) {
                 model_properties(ui, model);
             }
         }
-        Some(Selection::Body { model, body }) => {
-            if let Some(b) = document
+        Selection::Body { model, body } => {
+            if let Some((m, b)) = document
                 .models
                 .get(model)
                 .and_then(|m| m.bodies.get(body).map(|b| (m, b)))
             {
-                body_properties(ui, b.0, b.1);
+                body_properties(ui, m, b);
             }
         }
+        Selection::Face { model, body, id } => {
+            entity_properties(ui, document, item, model, body, "Face", |ui| {
+                ui.label("Id");
+                ui.label(id.to_string());
+                ui.end_row();
+            });
+        }
+        Selection::Edge { model, body, id } => {
+            entity_properties(ui, document, item, model, body, "Edge", |ui| {
+                ui.label("Id");
+                ui.label(id.to_string());
+                ui.end_row();
+            });
+        }
+        Selection::Vertex { model, body, index } => {
+            entity_properties(ui, document, item, model, body, "Vertex", |ui| {
+                ui.label("Index");
+                ui.label(index.to_string());
+                ui.end_row();
+                if let Some(p) = document
+                    .models
+                    .get(model)
+                    .and_then(|m| m.bodies.get(body))
+                    .and_then(|b| b.display.cad_vertices.get(index as usize))
+                {
+                    ui.label("Position");
+                    ui.label(fmt_point(*p));
+                    ui.end_row();
+                }
+            });
+        }
+        Selection::Node { model, body, index } => {
+            entity_properties(ui, document, item, model, body, "Node", |ui| {
+                ui.label("Index");
+                ui.label(index.to_string());
+                ui.end_row();
+                if let Some(p) = document
+                    .models
+                    .get(model)
+                    .and_then(|m| m.bodies.get(body))
+                    .and_then(|b| b.display.positions.get(index as usize))
+                {
+                    ui.label("Position");
+                    ui.label(fmt_point(*p));
+                    ui.end_row();
+                }
+            });
+        }
+        Selection::Cell { model, body, index } => {
+            entity_properties(ui, document, item, model, body, "Cell", |ui| {
+                ui.label("Index");
+                ui.label(index.to_string());
+                ui.end_row();
+            });
+        }
+        Selection::MeshEdge { model, body, a, b } => {
+            entity_properties(ui, document, item, model, body, "Edge", |ui| {
+                ui.label("Nodes");
+                ui.label(format!("{a}, {b}"));
+                ui.end_row();
+            });
+        }
     }
+}
+
+fn entity_properties(
+    ui: &mut Ui,
+    document: &Document,
+    item: Selection,
+    model: usize,
+    body: usize,
+    kind: &str,
+    extra: impl FnOnce(&mut Ui),
+) {
+    let Some(m) = document.models.get(model) else {
+        return;
+    };
+    let Some(b) = m.bodies.get(body) else {
+        return;
+    };
+    egui::Grid::new("entity_props")
+        .num_columns(2)
+        .spacing([12.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Type");
+            ui.label(kind);
+            ui.end_row();
+            extra(ui);
+            ui.label("Model");
+            ui.label(&m.name);
+            ui.end_row();
+            ui.label("Body");
+            ui.label(&b.name);
+            ui.end_row();
+            if let Some(bbox) = document.item_bbox(item) {
+                bbox_rows(ui, bbox);
+            }
+        });
 }
 
 fn model_properties(ui: &mut Ui, model: &Model) {
@@ -468,6 +570,10 @@ fn fmt_num(v: f64) -> String {
 
 fn fmt_vec(v: DVec3) -> String {
     format!("{}, {}, {}", fmt_num(v.x), fmt_num(v.y), fmt_num(v.z))
+}
+
+fn fmt_point(p: [f32; 3]) -> String {
+    fmt_vec(DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64))
 }
 
 fn console_ui(ui: &mut Ui, lines: &[String]) {

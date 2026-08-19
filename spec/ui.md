@@ -50,6 +50,7 @@ Drag-and-drop onto the viewport imports using the same format registry as File �
 - Standard views: +X −X +Y −Y +Z −Z, isometric
 - Display toggles: Faces, Edges (CAD feature edges), Mesh (tessellation edges), Vertices
 - Clip plane: axis X/Y/Z, offset, flip (view filter, not a geometry split)
+- Pick mode is on the viewport bar: Off, Body, Face, Edge, Vertex, Cell, Node
 - Save screenshot
 - Background / appearance (egui defaults; no custom theme unless requested)
 

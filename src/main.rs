@@ -2,6 +2,7 @@ mod app;
 mod document;
 mod gpu;
 mod import;
+mod pick;
 mod viewport;
 
 use eframe::egui;

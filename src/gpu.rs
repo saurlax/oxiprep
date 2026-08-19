@@ -8,6 +8,7 @@ use eframe::egui_wgpu::wgpu::util::DeviceExt;
 use std::num::NonZeroU64;
 
 const HIGHLIGHT: [u8; 3] = [0xE8, 0xA3, 0x3C];
+const HIGHLIGHT_LINE: [f32; 4] = [0.91, 0.64, 0.24, 1.0];
 const EDGE: [f32; 4] = [0.12, 0.12, 0.12, 1.0];
 const MESH_EDGE: [f32; 4] = [0.38, 0.38, 0.38, 1.0];
 const VERTEX: [f32; 4] = [0.15, 0.15, 0.15, 1.0];
@@ -55,10 +56,10 @@ pub struct GpuRenderer {
     scene_key: SceneKey,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SceneKey {
     models: usize,
-    selection: Option<Selection>,
+    selection: Vec<Selection>,
     tris: usize,
     faces: bool,
     edges: bool,
@@ -199,7 +200,7 @@ impl GpuRenderer {
             size: [0, 0],
             scene_key: SceneKey {
                 models: usize::MAX,
-                selection: None,
+                selection: Vec::new(),
                 tris: 0,
                 faces: false,
                 edges: false,
@@ -313,7 +314,7 @@ impl GpuRenderer {
         };
         let key = SceneKey {
             models: document.models.len(),
-            selection: document.selection,
+            selection: document.selection.clone(),
             tris: tri_count,
             faces: display.faces,
             edges: display.edges,
@@ -340,7 +341,7 @@ impl GpuRenderer {
 
     fn draw(&mut self, camera: &Camera, w: u32, h: u32, clip: Option<[f32; 4]>, bg: Color32) {
         let aspect = w as f32 / h.max(1) as f32;
-        let (view_proj, light) = camera_matrices(camera, aspect);
+        let (view_proj, light) = camera.view_proj(aspect);
         let (clip_plane, clip_enabled) = match clip {
             Some(p) => (p, 1.0),
             None => ([0.0, 0.0, 1.0, 0.0], 0.0),
@@ -467,39 +468,56 @@ fn pack_document(
     let mark = (camera.distance * 0.008).clamp(1e-4, 1e6) as f32;
     for (mi, model) in document.models.iter().enumerate() {
         for (bi, body) in model.bodies.iter().enumerate() {
-            let selected = document.is_body_selected(mi, bi)
-                || document.selection == Some(Selection::Model(mi));
             let mesh = &body.display;
-            if display.faces {
-                for (tri, rgb) in mesh.triangles.iter().zip(mesh.triangle_colors.iter()) {
-                    let mut color = *rgb;
-                    if selected {
-                        color = [
-                            ((color[0] as u16 + HIGHLIGHT[0] as u16) / 2) as u8,
-                            ((color[1] as u16 + HIGHLIGHT[1] as u16) / 2) as u8,
-                            ((color[2] as u16 + HIGHLIGHT[2] as u16) / 2) as u8,
-                        ];
-                    }
-                    let color = [
-                        color[0] as f32 / 255.0,
-                        color[1] as f32 / 255.0,
-                        color[2] as f32 / 255.0,
-                        1.0,
+            let body_hl = document.highlights_body(mi, bi);
+            for (ti, (tri, rgb)) in mesh
+                .triangles
+                .iter()
+                .zip(mesh.triangle_colors.iter())
+                .enumerate()
+            {
+                let face_id = mesh.triangle_face_ids.get(ti).copied().unwrap_or(0);
+                let selected = body_hl
+                    || document.is_face_selected(mi, bi, face_id)
+                    || document.is_cell_selected(mi, bi, ti as u32);
+                if !display.faces && !selected {
+                    continue;
+                }
+                let mut color = *rgb;
+                if selected {
+                    color = [
+                        ((color[0] as u16 + HIGHLIGHT[0] as u16) / 2) as u8,
+                        ((color[1] as u16 + HIGHLIGHT[1] as u16) / 2) as u8,
+                        ((color[2] as u16 + HIGHLIGHT[2] as u16) / 2) as u8,
                     ];
-                    for &idx in tri {
-                        let i = idx as usize;
-                        let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
-                        fill.push(GpuVertex {
-                            position: mesh.positions[i],
-                            normal,
-                            color,
-                        });
-                    }
+                }
+                let color = [
+                    color[0] as f32 / 255.0,
+                    color[1] as f32 / 255.0,
+                    color[2] as f32 / 255.0,
+                    1.0,
+                ];
+                for &idx in tri {
+                    let i = idx as usize;
+                    let normal = mesh.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+                    fill.push(GpuVertex {
+                        position: mesh.positions[i],
+                        normal,
+                        color,
+                    });
                 }
             }
-            let has_cad_edges = mesh.edges.iter().any(|p| !p[0].is_nan());
             if display.edges {
-                if has_cad_edges {
+                if !mesh.cad_edges.is_empty() {
+                    for edge in &mesh.cad_edges {
+                        let color = if document.is_edge_selected(mi, bi, edge.id) {
+                            HIGHLIGHT_LINE
+                        } else {
+                            EDGE
+                        };
+                        pack_polyline(&mut lines, &edge.points, color);
+                    }
+                } else if mesh.edges.iter().any(|p| !p[0].is_nan()) {
                     pack_cad_edges(&mut lines, &mesh.edges);
                 } else if !display.mesh {
                     pack_triangle_edges(&mut lines, mesh, MESH_EDGE);
@@ -508,18 +526,94 @@ fn pack_document(
             if display.mesh {
                 pack_triangle_edges(&mut lines, mesh, MESH_EDGE);
             }
+            overlay_selected_edges(document, mi, bi, mesh, &mut lines);
             if display.vertices {
-                let color = if selected { VERTEX_SEL } else { VERTEX };
-                for p in &mesh.positions {
-                    let u = [u_axis[0] * mark, u_axis[1] * mark, u_axis[2] * mark];
-                    let v = [v_axis[0] * mark, v_axis[1] * mark, v_axis[2] * mark];
-                    push_line(&mut lines, sub_f(*p, u), add_f(*p, u), color);
-                    push_line(&mut lines, sub_f(*p, v), add_f(*p, v), color);
+                for (index, p) in mesh.cad_vertices.iter().enumerate() {
+                    let selected = body_hl || document.is_vertex_selected(mi, bi, index as u32);
+                    let color = if selected { VERTEX_SEL } else { VERTEX };
+                    push_cross(&mut lines, *p, u_axis, v_axis, mark, color);
+                }
+                if mesh.cad_vertices.is_empty() {
+                    for (index, p) in mesh.positions.iter().enumerate() {
+                        let selected = body_hl || document.is_node_selected(mi, bi, index as u32);
+                        let color = if selected { VERTEX_SEL } else { VERTEX };
+                        push_cross(&mut lines, *p, u_axis, v_axis, mark, color);
+                    }
                 }
             }
+            overlay_selected_vertices(document, mi, bi, mesh, u_axis, v_axis, mark, &mut lines);
         }
     }
     (fill, lines)
+}
+
+fn pack_polyline(lines: &mut Vec<GpuVertex>, points: &[[f32; 3]], color: [f32; 4]) {
+    for w in points.windows(2) {
+        push_line(lines, w[0], w[1], color);
+    }
+}
+
+fn overlay_selected_edges(
+    document: &Document,
+    mi: usize,
+    bi: usize,
+    mesh: &crate::document::DisplayMesh,
+    lines: &mut Vec<GpuVertex>,
+) {
+    for edge in &mesh.cad_edges {
+        if document.is_edge_selected(mi, bi, edge.id) {
+            pack_polyline(lines, &edge.points, HIGHLIGHT_LINE);
+        }
+    }
+    for s in &document.selection {
+        if let Selection::MeshEdge { model, body, a, b } = *s {
+            if model == mi && body == bi {
+                let Some(pa) = mesh.positions.get(a as usize) else {
+                    continue;
+                };
+                let Some(pb) = mesh.positions.get(b as usize) else {
+                    continue;
+                };
+                push_line(lines, *pa, *pb, HIGHLIGHT_LINE);
+            }
+        }
+    }
+}
+
+fn overlay_selected_vertices(
+    document: &Document,
+    mi: usize,
+    bi: usize,
+    mesh: &crate::document::DisplayMesh,
+    u_axis: [f32; 3],
+    v_axis: [f32; 3],
+    mark: f32,
+    lines: &mut Vec<GpuVertex>,
+) {
+    for (index, p) in mesh.cad_vertices.iter().enumerate() {
+        if document.is_vertex_selected(mi, bi, index as u32) {
+            push_cross(lines, *p, u_axis, v_axis, mark, VERTEX_SEL);
+        }
+    }
+    for (index, p) in mesh.positions.iter().enumerate() {
+        if document.is_node_selected(mi, bi, index as u32) {
+            push_cross(lines, *p, u_axis, v_axis, mark, VERTEX_SEL);
+        }
+    }
+}
+
+fn push_cross(
+    lines: &mut Vec<GpuVertex>,
+    p: [f32; 3],
+    u_axis: [f32; 3],
+    v_axis: [f32; 3],
+    mark: f32,
+    color: [f32; 4],
+) {
+    let u = [u_axis[0] * mark, u_axis[1] * mark, u_axis[2] * mark];
+    let v = [v_axis[0] * mark, v_axis[1] * mark, v_axis[2] * mark];
+    push_line(lines, sub_f(p, u), add_f(p, u), color);
+    push_line(lines, sub_f(p, v), add_f(p, v), color);
 }
 
 fn pack_cad_edges(lines: &mut Vec<GpuVertex>, edges: &[[f32; 3]]) {
@@ -634,75 +728,4 @@ fn nice_step(target: f64) -> f64 {
         5.0
     };
     nice * pow
-}
-
-fn camera_matrices(camera: &Camera, aspect: f32) -> ([[f32; 4]; 4], [f32; 3]) {
-    let dir = camera.view_dir();
-    let eye = camera.target + dir * camera.distance;
-    let up = {
-        let raw = DVec3::Z;
-        (raw - dir * raw.dot(dir)).normalize_or_zero()
-    };
-    let view = look_at_rh(dvec(eye), dvec(camera.target), dvec(up));
-    let znear = (camera.distance * 0.01).max(1e-4) as f32;
-    let zfar = (camera.distance * 100.0).max(f64::from(znear) * 10.0) as f32;
-    let proj = perspective_rh(FOV_Y as f32, aspect.max(1e-6), znear, zfar);
-    (mat4_mul(proj, view), dvec(dir))
-}
-
-fn look_at_rh(eye: [f32; 3], center: [f32; 3], up: [f32; 3]) -> [[f32; 4]; 4] {
-    let f = normalize(sub(center, eye));
-    let s = normalize(cross(f, up));
-    let u = cross(s, f);
-    [
-        [s[0], u[0], -f[0], 0.0],
-        [s[1], u[1], -f[1], 0.0],
-        [s[2], u[2], -f[2], 0.0],
-        [-dot(s, eye), -dot(u, eye), dot(f, eye), 1.0],
-    ]
-}
-
-fn perspective_rh(fov_y: f32, aspect: f32, znear: f32, zfar: f32) -> [[f32; 4]; 4] {
-    let f = 1.0 / (fov_y * 0.5).tan();
-    let r = zfar / (znear - zfar);
-    [
-        [f / aspect, 0.0, 0.0, 0.0],
-        [0.0, f, 0.0, 0.0],
-        [0.0, 0.0, r, -1.0],
-        [0.0, 0.0, r * znear, 0.0],
-    ]
-}
-
-fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
-    let mut out = [[0.0f32; 4]; 4];
-    for col in 0..4 {
-        for row in 0..4 {
-            out[col][row] = a[0][row] * b[col][0]
-                + a[1][row] * b[col][1]
-                + a[2][row] * b[col][2]
-                + a[3][row] * b[col][3];
-        }
-    }
-    out
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn normalize(v: [f32; 3]) -> [f32; 3] {
-    let len = dot(v, v).sqrt().max(1e-12);
-    [v[0] / len, v[1] / len, v[2] / len]
 }

@@ -6,17 +6,19 @@ Orbit, pan, zoom. Fit all / fit selection. Perspective and orthographic. A small
 
 ## Pick modes
 
-Exactly one pick mode at a time:
+Exactly one pick mode at a time, on the viewport bar (default Body):
 
 **Geometry:** vertex, edge, face, body.
 
-**Mesh:** node, edge, face, element (cell).
+**Mesh:** node, edge, cell.
 
 **Off:** navigation only.
 
-Box / rubber-band select for mesh nodes and cells. Click-add and click-remove (modifier) for multi-select. Selection is the input to measure, groups, BCs, and mesh sizing.
+Click selects the closest entity under the cursor. Drag still orbits. A miss with no modifier clears. Shift adds; Command (Ctrl on Windows/Linux) toggles. Box / rubber-band select is later.
 
-Picking must return stable IDs, not only display triangles.
+CAD face and edge use kernel shape IDs. CAD vertices use unique edge endpoints. Mesh-only bodies map Face to a cell and Edge to a node pair.
+
+Selection is the input to measure, groups, BCs, and mesh sizing.
 
 ## Display
 
