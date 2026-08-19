@@ -97,6 +97,7 @@ impl Selection {
 pub struct Document {
     pub models: Vec<Model>,
     pub selection: Vec<Selection>,
+    pub dirty: bool,
 }
 
 pub struct Model {
@@ -152,6 +153,7 @@ impl Document {
         Self {
             models: Vec::new(),
             selection: Vec::new(),
+            dirty: false,
         }
     }
 
@@ -159,7 +161,7 @@ impl Document {
         self.models.is_empty()
     }
 
-    pub fn import_path(&mut self, path: &Path) -> Result<usize, ImportError> {
+    pub fn load_model(path: &Path) -> Result<Model, ImportError> {
         let imported = import::load_path(path)?;
         let mut bodies = Vec::with_capacity(imported.bodies.len());
         for (i, body) in imported.bodies.into_iter().enumerate() {
@@ -168,15 +170,39 @@ impl Document {
         if bodies.is_empty() {
             return Err(ImportError::Empty);
         }
-        let index = self.models.len();
-        self.models.push(Model {
+        Ok(Model {
             name: file_stem(path),
             path: path.to_path_buf(),
             kind: imported.kind,
             bodies,
-        });
+        })
+    }
+
+    pub fn import_path(&mut self, path: &Path) -> Result<usize, ImportError> {
+        let model = Self::load_model(path)?;
+        let index = self.models.len();
+        self.insert_model(index, model);
         self.selection = vec![Selection::Model(index)];
         Ok(index)
+    }
+
+    pub fn insert_model(&mut self, index: usize, model: Model) {
+        let index = index.min(self.models.len());
+        self.models.insert(index, model);
+    }
+
+    pub fn take_model(&mut self, index: usize) -> Option<Model> {
+        if index >= self.models.len() {
+            return None;
+        }
+        let model = self.models.remove(index);
+        self.selection = self
+            .selection
+            .iter()
+            .copied()
+            .filter_map(|s| s.remap_after_remove(index))
+            .collect();
+        Some(model)
     }
 
     pub(crate) fn push_imported(
@@ -194,31 +220,6 @@ impl Document {
         });
         self.selection = vec![Selection::Model(index)];
         Ok(index)
-    }
-
-    pub fn close_model(&mut self, model: usize) {
-        if model >= self.models.len() {
-            return;
-        }
-        self.models.remove(model);
-        self.selection = self
-            .selection
-            .iter()
-            .copied()
-            .filter_map(|s| s.remap_after_remove(model))
-            .collect();
-    }
-
-    pub fn close_selected(&mut self) {
-        let Some(model) = self.selection.first().map(|s| s.model()) else {
-            return;
-        };
-        self.close_model(model);
-    }
-
-    pub fn selected_model(&self) -> Option<(usize, &Model)> {
-        let model = self.selection.first()?.model();
-        self.models.get(model).map(|m| (model, m))
     }
 
     pub fn is_body_selected(&self, model: usize, body: usize) -> bool {
@@ -392,7 +393,7 @@ pub fn bbox_of_model(model: &Model) -> Option<[DVec3; 2]> {
     bbox_of(model.bodies.iter())
 }
 
-fn file_stem(path: &Path) -> String {
+pub(crate) fn file_stem(path: &Path) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
         .map(str::to_string)

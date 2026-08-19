@@ -3,7 +3,9 @@ use eframe::egui::{self, Id, KeyboardShortcut, Modifiers, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 use std::path::Path;
 
+use crate::command::CommandError;
 use crate::document::{Body, BodyStats, Document, Model, Selection};
+use crate::session::Session;
 use crate::viewport::Viewport;
 use eframe::CreationContext;
 
@@ -28,7 +30,7 @@ impl Tab {
 
 pub struct OxiprepApp {
     dock_state: DockState<Tab>,
-    document: Document,
+    session: Session,
     viewport: Viewport,
     console: Vec<String>,
 }
@@ -42,7 +44,7 @@ impl OxiprepApp {
         let _ = surface.split_below(center, 0.78, vec![Tab::Console]);
         Self {
             dock_state,
-            document: Document::new(),
+            session: Session::new(),
             viewport: Viewport::new(cc.wgpu_render_state.clone()),
             console: Vec::new(),
         }
@@ -68,17 +70,10 @@ impl OxiprepApp {
         let mut last_index = None;
         for path in paths {
             let path = path.as_ref();
-            match self.document.import_path(path) {
-                Ok(index) => {
-                    let model = &self.document.models[index];
-                    let n = model.bodies.len();
-                    self.log(format!(
-                        "Opened {} ({}, {n} {}).",
-                        model.name,
-                        model.kind.label(),
-                        if n == 1 { "body" } else { "bodies" }
-                    ));
-                    last_index = Some(index);
+            match self.session.import_path(path) {
+                Ok(message) => {
+                    self.log(message);
+                    last_index = Some(self.session.document.models.len() - 1);
                 }
                 Err(err) => {
                     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
@@ -87,10 +82,19 @@ impl OxiprepApp {
             }
         }
         if let Some(index) = last_index {
-            if let Some(bbox) = crate::document::bbox_of_model(&self.document.models[index]) {
+            if let Some(bbox) = crate::document::bbox_of_model(&self.session.document.models[index])
+            {
                 self.viewport.fit(bbox);
             }
         }
+    }
+
+    fn apply_undo(&mut self) {
+        log_history(&mut self.console, self.session.undo());
+    }
+
+    fn apply_redo(&mut self) {
+        log_history(&mut self.console, self.session.redo());
     }
 }
 
@@ -101,8 +105,19 @@ impl eframe::App for OxiprepApp {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let open_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::O);
+        let undo_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::Z);
+        let redo_shortcut =
+            KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z);
+        let redo_y_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::Y);
         if ui.input_mut(|i| i.consume_shortcut(&open_shortcut)) {
             self.open_dialog();
+        }
+        if ui.input_mut(|i| {
+            i.consume_shortcut(&redo_shortcut) || i.consume_shortcut(&redo_y_shortcut)
+        }) {
+            self.apply_redo();
+        } else if ui.input_mut(|i| i.consume_shortcut(&undo_shortcut)) {
+            self.apply_undo();
         }
 
         let dropped: Vec<_> = ui.ctx().input(|i| {
@@ -116,6 +131,8 @@ impl eframe::App for OxiprepApp {
             self.import_paths(&dropped);
         }
 
+        let mut undo = false;
+        let mut redo = false;
         let mut open = false;
         let mut close = false;
         let mut quit = false;
@@ -123,8 +140,18 @@ impl eframe::App for OxiprepApp {
         let mut fit_sel = false;
         let mut look: Option<DVec3> = None;
         let mut look_iso = false;
-        let has_selection = !self.document.selection.is_empty();
-        let has_models = !self.document.is_empty();
+        let has_selection = !self.session.document.selection.is_empty();
+        let has_models = !self.session.document.is_empty();
+        let can_undo = self.session.can_undo();
+        let can_redo = self.session.can_redo();
+        let undo_text = match self.session.undo_label() {
+            Some(label) => format!("Undo {label}"),
+            None => "Undo".to_string(),
+        };
+        let redo_text = match self.session.redo_label() {
+            Some(label) => format!("Redo {label}"),
+            None => "Redo".to_string(),
+        };
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -152,7 +179,30 @@ impl eframe::App for OxiprepApp {
                         ui.close();
                     }
                 });
-                ui.menu_button("Edit", |_| {});
+                ui.menu_button("Edit", |ui| {
+                    if ui
+                        .add_enabled(
+                            can_undo,
+                            egui::Button::new(undo_text.clone())
+                                .shortcut_text(ui.ctx().format_shortcut(&undo_shortcut)),
+                        )
+                        .clicked()
+                    {
+                        undo = true;
+                        ui.close();
+                    }
+                    if ui
+                        .add_enabled(
+                            can_redo,
+                            egui::Button::new(redo_text.clone())
+                                .shortcut_text(ui.ctx().format_shortcut(&redo_shortcut)),
+                        )
+                        .clicked()
+                    {
+                        redo = true;
+                        ui.close();
+                    }
+                });
                 ui.menu_button("View", |ui| {
                     if ui
                         .add_enabled(has_models, egui::Button::new("Fit All"))
@@ -212,21 +262,27 @@ impl eframe::App for OxiprepApp {
             self.open_dialog();
         }
         if close {
-            if let Some((_, model)) = self.document.selected_model() {
-                self.log(format!("Closed {}.", model.name));
+            match self.session.close_selected() {
+                Ok(message) => self.log(message),
+                Err(err) => self.log(err.message()),
             }
-            self.document.close_selected();
+        }
+        if undo {
+            self.apply_undo();
+        }
+        if redo {
+            self.apply_redo();
         }
         if quit {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if fit_all {
-            if let Some(bbox) = self.document.bbox() {
+            if let Some(bbox) = self.session.document.bbox() {
                 self.viewport.fit(bbox);
             }
         }
         if fit_sel {
-            if let Some(bbox) = self.document.selection_bbox() {
+            if let Some(bbox) = self.session.document.selection_bbox() {
                 self.viewport.fit(bbox);
             }
         }
@@ -240,8 +296,8 @@ impl eframe::App for OxiprepApp {
         egui::Panel::bottom("status_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(format!("oxiprep {}", env!("CARGO_PKG_VERSION")));
-                if !self.document.is_empty() {
-                    let n = self.document.models.len();
+                if !self.session.document.is_empty() {
+                    let n = self.session.document.models.len();
                     ui.separator();
                     ui.label(if n == 1 {
                         "1 model".to_string()
@@ -254,7 +310,7 @@ impl eframe::App for OxiprepApp {
 
         let Self {
             dock_state,
-            document,
+            session,
             viewport,
             console,
         } = self;
@@ -267,7 +323,7 @@ impl eframe::App for OxiprepApp {
                     .show_inside(
                         ui,
                         &mut OxiprepTabs {
-                            document,
+                            session,
                             viewport,
                             console,
                         },
@@ -277,7 +333,7 @@ impl eframe::App for OxiprepApp {
 }
 
 struct OxiprepTabs<'a> {
-    document: &'a mut Document,
+    session: &'a mut Session,
     viewport: &'a mut Viewport,
     console: &'a mut Vec<String>,
 }
@@ -295,67 +351,70 @@ impl TabViewer for OxiprepTabs<'_> {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
-            Tab::Outliner => outliner_ui(ui, self.document, self.console),
-            Tab::Viewport => self.viewport.show(ui, self.document),
-            Tab::Properties => properties_ui(ui, self.document),
+            Tab::Outliner => outliner_ui(ui, self.session, self.console),
+            Tab::Viewport => self.viewport.show(ui, &mut self.session.document),
+            Tab::Properties => properties_ui(ui, &self.session.document),
             Tab::Console => console_ui(ui, self.console),
         }
     }
 }
 
-fn outliner_ui(ui: &mut Ui, document: &mut Document, console: &mut Vec<String>) {
-    if document.is_empty() {
+fn outliner_ui(ui: &mut Ui, session: &mut Session, console: &mut Vec<String>) {
+    if session.document.is_empty() {
         ui.label("No models loaded.");
         return;
     }
     let mut close = None;
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for mi in 0..document.models.len() {
-            let name = document.models[mi].name.clone();
-            let n_bodies = document.models[mi].bodies.len();
-            let model_selected = document.selection.iter().any(|s| s.model() == mi);
-            let header = egui::collapsing_header::CollapsingHeader::new(if model_selected {
-                egui::RichText::new(&name).strong()
-            } else {
-                egui::RichText::new(&name)
-            })
-            .id_salt(("model", mi))
-            .default_open(true)
-            .show(ui, |ui| {
-                for bi in 0..n_bodies {
-                    let body_name = document.models[mi].bodies[bi].name.clone();
-                    let selected = document.is_body_selected(mi, bi);
-                    let response = ui.selectable_label(selected, body_name);
-                    if response.clicked() || response.secondary_clicked() {
-                        document.selection = vec![Selection::Body {
-                            model: mi,
-                            body: bi,
-                        }];
-                    }
-                    response.context_menu(|ui| {
-                        if ui.button("Close").clicked() {
-                            close = Some(mi);
-                            ui.close();
+    {
+        let document = &mut session.document;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for mi in 0..document.models.len() {
+                let name = document.models[mi].name.clone();
+                let n_bodies = document.models[mi].bodies.len();
+                let model_selected = document.selection.iter().any(|s| s.model() == mi);
+                let header = egui::collapsing_header::CollapsingHeader::new(if model_selected {
+                    egui::RichText::new(&name).strong()
+                } else {
+                    egui::RichText::new(&name)
+                })
+                .id_salt(("model", mi))
+                .default_open(true)
+                .show(ui, |ui| {
+                    for bi in 0..n_bodies {
+                        let body_name = document.models[mi].bodies[bi].name.clone();
+                        let selected = document.is_body_selected(mi, bi);
+                        let response = ui.selectable_label(selected, body_name);
+                        if response.clicked() || response.secondary_clicked() {
+                            document.selection = vec![Selection::Body {
+                                model: mi,
+                                body: bi,
+                            }];
                         }
-                    });
+                        response.context_menu(|ui| {
+                            if ui.button("Close").clicked() {
+                                close = Some(mi);
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+                if header.header_response.clicked() || header.header_response.secondary_clicked() {
+                    document.selection = vec![Selection::Model(mi)];
                 }
-            });
-            if header.header_response.clicked() || header.header_response.secondary_clicked() {
-                document.selection = vec![Selection::Model(mi)];
+                header.header_response.context_menu(|ui| {
+                    if ui.button("Close").clicked() {
+                        close = Some(mi);
+                        ui.close();
+                    }
+                });
             }
-            header.header_response.context_menu(|ui| {
-                if ui.button("Close").clicked() {
-                    close = Some(mi);
-                    ui.close();
-                }
-            });
-        }
-    });
+        });
+    }
     if let Some(mi) = close {
-        if let Some(model) = document.models.get(mi) {
-            console.push(format!("Closed {}.", model.name));
+        match session.close_model(mi) {
+            Ok(message) => console.push(message),
+            Err(err) => console.push(err.message().to_string()),
         }
-        document.close_model(mi);
     }
 }
 
@@ -574,6 +633,14 @@ fn fmt_vec(v: DVec3) -> String {
 
 fn fmt_point(p: [f32; 3]) -> String {
     fmt_vec(DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64))
+}
+
+fn log_history(console: &mut Vec<String>, result: Result<Option<String>, CommandError>) {
+    match result {
+        Ok(Some(message)) => console.push(message),
+        Ok(None) => {}
+        Err(err) => console.push(err.message().to_string()),
+    }
 }
 
 fn console_ui(ui: &mut Ui, lines: &[String]) {

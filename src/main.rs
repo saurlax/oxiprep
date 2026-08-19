@@ -1,8 +1,10 @@
 mod app;
+mod command;
 mod document;
 mod gpu;
 mod import;
 mod pick;
+mod session;
 mod viewport;
 
 use eframe::egui;
