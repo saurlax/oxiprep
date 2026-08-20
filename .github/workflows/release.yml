@@ -4,11 +4,6 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing release tag to attach assets to. Leave empty to upload workflow artifacts only.
-        required: false
-        type: string
 
 permissions:
   contents: write
@@ -70,9 +65,9 @@ jobs:
           archive: false
 
       - name: Upload to GitHub Release
-        if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+        if: github.event_name == 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG" "dist/${{ matrix.asset }}" --clobber
