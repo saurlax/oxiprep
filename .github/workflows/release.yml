@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to attach assets to. Leave empty to upload workflow artifacts only.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: oxiprep-macos-aarch64.zip
+          - os: windows-latest
+            asset: oxiprep-windows-x86_64.zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo install cargo-bundle
+          cargo bundle --release
+          mkdir -p dist
+          ditto -c -k --keepParent target/release/bundle/osx/Oxiprep.app "dist/${{ matrix.asset }}"
+
+      - name: Package Windows exe
+        if: runner.os == 'Windows'
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        shell: pwsh
+        run: |
+          cargo build --release
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path target/release/oxiprep.exe -DestinationPath "dist/${{ matrix.asset }}" -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          archive: false
+
+      - name: Upload to GitHub Release
+        if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.tag != '') }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: gh release upload "$TAG" "dist/${{ matrix.asset }}" --clobber
