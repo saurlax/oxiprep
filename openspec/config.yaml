@@ -1,0 +1,56 @@
+schema: spec-driven
+
+context: |
+  Oxiprep is an Apache-2.0 desktop CAE preprocessor written in Rust with
+  egui/eframe, wgpu, and cadrum (OpenCASCADE). It targets Windows, macOS,
+  and Linux.
+
+  The existing documents under spec/ are the product baseline and source
+  material for brownfield changes. Before planning a change, read
+  spec/README.md, spec/phasing.md, spec/architecture.md, and the relevant
+  domain document. Do not bulk-convert those documents into OpenSpec specs;
+  let openspec/specs grow from real, archived changes.
+
+  The current priority is the P0 preprocessor. Do not plan solver,
+  postprocessing, or Python UI work while P0 remains open unless the user
+  explicitly changes the priority.
+
+  Architecture constraints:
+  - Keep one-way dependencies: UI -> session -> document/domain layers.
+  - All document mutations go through undoable commands.
+  - UI never owns CAD or mesh truth.
+  - Keep Results and later Case/Solve/Post extension points empty until their
+    phase is active; do not expose placeholder controls.
+
+  Product UI is a tool, not a status report. Use egui defaults. Do not put
+  implementation notes, TODOs, kernel names, or "not wired yet" copy in the
+  application. Empty panels stay blank or show a short factual empty state.
+
+  Preserve Apache-2.0 licensing for Oxiprep and LGPL-2.1 obligations for OCCT.
+  Do not commit changes unless the user explicitly asks.
+
+rules:
+  proposal:
+    - Identify the relevant P0/P1/P2/L phase and explain any departure from the current P0 priority.
+    - Name the spec/ baseline documents used as source material.
+    - Call out conflicts with the product baseline instead of silently overriding them.
+    - Keep implementation details in design.md rather than proposal.md.
+  specs:
+    - Specify observable product behavior and testable scenarios, not Rust modules or UI implementation details.
+    - Do not add commands, panels, menus, or status text that the product baseline does not call for.
+    - Include cross-platform scenarios when behavior involves files, paths, shortcuts, or native windows.
+  design:
+    - Preserve the one-way dependency stack and command-only write path from spec/architecture.md.
+    - Record any effect on native project compatibility, undo/redo, background tasks, or geometry/mesh ownership.
+  tasks:
+    - Keep tasks small, dependency ordered, and explicit about verification.
+    - Include cargo fmt --check and a relevant cargo test or cargo check command when Rust code changes.
+
+operations:
+  apply:
+    guidance:
+      - Read every context file returned by OpenSpec before editing code.
+      - Preserve unrelated user changes in the worktree.
+  archive:
+    guidance:
+      - Validate the change strictly before archiving.

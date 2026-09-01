@@ -2,6 +2,13 @@
 
 Product requirements. These files describe the intended product, not the current code.
 
+Change management now uses [OpenSpec](../openspec/config.yaml). Treat this
+directory as the brownfield product baseline and source material when creating
+an OpenSpec change. New or changed behavior is proposed under
+`openspec/changes/`; after implementation and archive, its testable requirements
+accumulate under `openspec/specs/`. The baseline remains binding for areas that
+OpenSpec has not touched.
+
 Preprocessor first (geometry, mesh, case setup). Solver control and postprocessing are later stages on the same document and UI shell. UI copy in the running app stays factual; unused menus and panels stay empty.
 
 ## How to read
@@ -10,7 +17,9 @@ Preprocessor first (geometry, mesh, case setup). Solver control and postprocessi
 2. Open the domain file that matches the task.
 3. Check [phasing](phasing.md) so work stays on the agreed priority.
 
-Agents: follow `AGENTS.md`. Implement against these files; do not add chrome or commands the spec does not call for.
+Agents: follow `AGENTS.md` and the OpenSpec workflow. Implement against these
+files plus the active approved change; do not add chrome or commands that
+neither calls for.
 
 ## Files
 

@@ -25,7 +25,20 @@ The first build downloads a prebuilt OpenCASCADE library.
 
 ## Contributing
 
-Issues and pull requests are welcome. Run `cargo fmt` before sending a change.
+Issues and pull requests are welcome. Product changes are managed with
+[OpenSpec](https://github.com/Fission-AI/OpenSpec). Install the CLI and use the
+generated Codex workflows to propose, implement, and archive a change:
+
+```bash
+npm install -g @fission-ai/openspec@1.11.0
+openspec list
+```
+
+In Codex, start with `$openspec-propose`, continue with
+`$openspec-apply-change`, and finish with `$openspec-archive-change`. Existing
+product requirements under [`spec/`](spec/README.md) are source material for
+the proposal. Run `openspec validate --all --strict --no-interactive` and
+`cargo fmt --check` before sending a change.
 
 ## License
 
