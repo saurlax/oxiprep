@@ -19,3 +19,33 @@ jobs:
           node-version: 22
       - name: Validate OpenSpec artifacts
         run: npx --yes @fission-ai/openspec@1.11.0 validate --all --strict --no-interactive
+
+  process-ipc:
+    name: ACP/MCP process IPC (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up MinGW
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          suppress-deprecation-warnings: msystem-mingw64
+          install: mingw-w64-x86_64-gcc
+      - name: Test ACP/MCP process IPC (Unix)
+        if: runner.os != 'Windows'
+        run: cargo test --test acp_runtime --test mcp_proxy
+      - name: Test ACP/MCP process IPC (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $env:PATH = "$env:MSYS2_LOCATION\mingw64\bin;$env:PATH"
+          rustup target add x86_64-pc-windows-gnu
+          cargo test --target x86_64-pc-windows-gnu --test acp_runtime --test mcp_proxy

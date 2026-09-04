@@ -1,18 +1,22 @@
-mod app;
-mod command;
-mod document;
-mod geometry;
-mod gpu;
-mod import;
-mod mesh;
-mod pick;
-mod project;
-mod session;
-mod viewport;
-
 use eframe::egui;
+use oxiprep::{ai, app};
 
 fn main() -> eframe::Result {
+    if let Some(result) = ai::mcp::maybe_run_proxy_mode() {
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+    #[cfg(debug_assertions)]
+    if let Some(result) = ai::acp::maybe_run_fixture_mode() {
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("oxiprep")

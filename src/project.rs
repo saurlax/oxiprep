@@ -16,6 +16,7 @@ use crate::import::ModelKind;
 
 const FORMAT: u32 = 1;
 const MESH_MAGIC: &[u8; 4] = b"OXMS";
+type SavedMesh = (Vec<[f32; 3]>, Vec<[u32; 3]>);
 
 #[derive(Debug)]
 pub enum ProjectError {
@@ -425,7 +426,7 @@ fn read_analysis_bin(bytes: &[u8]) -> Result<AnalysisMesh, ProjectError> {
     })
 }
 
-fn read_mesh_bin(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>), ProjectError> {
+fn read_mesh_bin(bytes: &[u8]) -> Result<SavedMesh, ProjectError> {
     if bytes.len() < 16 || &bytes[..4] != MESH_MAGIC {
         return Err(ProjectError::Invalid);
     }
@@ -558,8 +559,16 @@ struct VertexFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::profile::AgentProfile;
+    use crate::ai::transcript::Transcript;
+    use crate::app_operation::{AppOperationRequest, HostApproval, dispatch};
+    use crate::document::Selection;
     use crate::geometry::CreateKind;
     use crate::session::Session;
+    use crate::viewport::Viewport;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::io::Read;
     use std::path::PathBuf;
 
     fn temp_path(name: &str) -> PathBuf {
@@ -699,5 +708,147 @@ mod tests {
         assert_eq!(mesh.tets.len(), tets);
         assert!(!mesh.triangles.is_empty());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn agent_actions_preserve_project_archives_without_ai_state() {
+        const SECRET_SENTINEL: &str = "OXIPREP_AI_SECRET_SENTINEL_7D2A";
+        const CONVERSATION_SENTINEL: &str = "OXIPREP_AI_CONVERSATION_SENTINEL_4C1E";
+        let directory = tempfile::tempdir().unwrap();
+        let before_path = directory.path().join("before.oxiprep");
+        let after_path = directory.path().join("after.oxiprep");
+
+        let mut baseline = Session::new();
+        baseline
+            .create_model(CreateKind::r#box().into_model(&baseline.document).unwrap())
+            .unwrap();
+        baseline.save_to(&before_path).unwrap();
+
+        let mut agent = Session::new();
+        agent.open_project(&before_path).unwrap();
+        let mut viewport = Viewport::new(None);
+        dispatch(
+            &AppOperationRequest::new(
+                "geometry.create",
+                json!({"kind": "sphere", "add_to_model": 0}),
+            ),
+            &mut agent,
+            &mut viewport,
+            HostApproval::NotRequired,
+        )
+        .unwrap();
+        dispatch(
+            &AppOperationRequest::new(
+                "mesh.generate",
+                json!({
+                    "revision": 2,
+                    "targets": [{"kind": "body", "model": 0, "body": 0}],
+                    "kind": "surface",
+                    "size": 0.5
+                }),
+            ),
+            &mut agent,
+            &mut viewport,
+            HostApproval::NotRequired,
+        )
+        .unwrap();
+        dispatch(
+            &AppOperationRequest::new(
+                "document.delete",
+                json!({
+                    "revision": 3,
+                    "targets": [{"kind": "body", "model": 0, "body": 1}]
+                }),
+            ),
+            &mut agent,
+            &mut viewport,
+            HostApproval::NotRequired,
+        )
+        .unwrap();
+        dispatch(
+            &AppOperationRequest::new("history.undo", json!({})),
+            &mut agent,
+            &mut viewport,
+            HostApproval::NotRequired,
+        )
+        .unwrap();
+        assert_eq!(
+            agent.document.selection,
+            vec![Selection::Body { model: 0, body: 1 }]
+        );
+        assert_eq!(agent.undo_label(), Some("Mesh surface"));
+        assert_eq!(agent.redo_label(), Some("Delete Sphere"));
+        agent.save_to(&after_path).unwrap();
+
+        let mut profile = AgentProfile::new("Archive isolation", "agent");
+        profile.environment =
+            BTreeMap::from([("API_TOKEN".to_owned(), SECRET_SENTINEL.to_owned())]);
+        let mut transcript = Transcript::default();
+        transcript.push_user(CONVERSATION_SENTINEL);
+        assert_eq!(profile.environment["API_TOKEN"], SECRET_SENTINEL);
+        assert_eq!(transcript.items()[0].text, CONVERSATION_SENTINEL);
+
+        let (before_entries, before_contents) = archive_contents(&before_path);
+        let (after_entries, after_contents) = archive_contents(&after_path);
+        assert!(before_entries.contains(&"manifest.json".to_owned()));
+        assert!(after_entries.contains(&"manifest.json".to_owned()));
+        assert_eq!(
+            before_entries
+                .iter()
+                .filter(|name| name.ends_with(".brep"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            after_entries
+                .iter()
+                .filter(|name| name.ends_with(".brep"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            after_entries
+                .iter()
+                .filter(|name| name.starts_with("meshes/"))
+                .count(),
+            1
+        );
+        for bytes in [&before_contents, &after_contents] {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(!text.contains(SECRET_SENTINEL));
+            assert!(!text.contains(CONVERSATION_SENTINEL));
+            for forbidden in [
+                "agent-profiles",
+                "mcp_endpoint",
+                "acp_session",
+                "conversation",
+            ] {
+                assert!(!text.contains(forbidden));
+            }
+        }
+
+        let mut reopened = Session::new();
+        reopened.open_project(&after_path).unwrap();
+        assert_eq!(reopened.document.models.len(), 1);
+        assert_eq!(reopened.document.models[0].bodies.len(), 2);
+        assert!(reopened.document.models[0].bodies[0].has_discrete_mesh());
+        assert!(!reopened.document.models[0].bodies[1].has_discrete_mesh());
+        assert!(reopened.document.selection.is_empty());
+        assert!(!reopened.document.dirty);
+        assert!(!reopened.can_undo());
+        assert!(!reopened.can_redo());
+    }
+
+    fn archive_contents(path: &Path) -> (Vec<String>, Vec<u8>) {
+        let file = std::fs::File::open(path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        let mut names = Vec::new();
+        let mut contents = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            names.push(entry.name().to_owned());
+            entry.read_to_end(&mut contents).unwrap();
+        }
+        (names, contents)
     }
 }

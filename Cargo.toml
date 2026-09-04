@@ -20,6 +20,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 robust = "1"
+agent-client-protocol = { version = "2.0.0", default-features = false }
+directories = "6"
+egui_commonmark = { version = "0.25.0", default-features = false, features = ["pulldown_cmark"] }
+futures = "0.3"
+rand = "0.9"
+rmcp = { version = "3.2.0", default-features = false, features = ["server", "client", "transport-io", "transport-child-process"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
 
 [package.metadata.bundle]
 name = "Oxiprep"
@@ -28,4 +39,3 @@ icon = ["assets/macos/AppIcon.icns", "assets/app-icon.png"]
 category = "Graphics Design"
 short_description = "Open-source Rust CAE preprocessor"
 osx_minimum_system_version = "11.0"
-

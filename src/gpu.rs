@@ -213,6 +213,7 @@ impl GpuRenderer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -575,20 +576,22 @@ fn overlay_selected_edges(
         }
     }
     for s in &document.selection {
-        if let Selection::MeshEdge { model, body, a, b } = *s {
-            if model == mi && body == bi {
-                let Some(pa) = mesh.positions.get(a as usize) else {
-                    continue;
-                };
-                let Some(pb) = mesh.positions.get(b as usize) else {
-                    continue;
-                };
-                push_line(lines, *pa, *pb, HIGHLIGHT_LINE);
-            }
+        if let Selection::MeshEdge { model, body, a, b } = *s
+            && model == mi
+            && body == bi
+        {
+            let Some(pa) = mesh.positions.get(a as usize) else {
+                continue;
+            };
+            let Some(pb) = mesh.positions.get(b as usize) else {
+                continue;
+            };
+            push_line(lines, *pa, *pb, HIGHLIGHT_LINE);
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn overlay_selected_vertices(
     document: &Document,
     mi: usize,

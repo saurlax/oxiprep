@@ -1,6 +1,11 @@
 use cadrum::{DVec3, Face, Mesh as CadMesh, Solid, Tessellation};
 use robust::{Coord, Coord3D, incircle, insphere, orient2d, orient3d};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+type SurfaceMeshData = (Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<u64>);
 
 use crate::command::CommandError;
 use crate::document::{AnalysisMesh, BodyShape, Document};
@@ -97,7 +102,7 @@ pub fn generate(solid: &Solid, kind: MeshKind, size: f64) -> Result<AnalysisMesh
         Vec::new()
     };
     if !tets.is_empty() {
-        let (skin, skin_fids) = tet_skin(solid, &nodes, &tets);
+        let (skin, skin_fids) = tet_skin(&nodes, &tets, &triangles, &face_ids);
         if !skin.is_empty() {
             triangles = skin;
             face_ids = skin_fids;
@@ -111,10 +116,7 @@ pub fn generate(solid: &Solid, kind: MeshKind, size: f64) -> Result<AnalysisMesh
     })
 }
 
-fn surface_mesh(
-    solid: &Solid,
-    size: f64,
-) -> Result<(Vec<[f32; 3]>, Vec<[u32; 3]>, Vec<u64>), CommandError> {
+fn surface_mesh(solid: &Solid, size: f64) -> Result<SurfaceMeshData, CommandError> {
     let diag = {
         let bb = solid.bounding_box();
         (bb[1] - bb[0]).length().max(size)
@@ -126,24 +128,24 @@ fn surface_mesh(
     let mut triangles = Vec::new();
     let mut face_ids = Vec::new();
     for face in solid.iter_face() {
-        let loops = face_loops(&face, &chains, &pts.nodes, weld);
+        let loops = face_loops(face, &chains, &pts.nodes, weld);
         let mut tris = Vec::new();
-        if let Some(frame) = planar_frame(&face, &loops, &pts.nodes, size) {
-            tris = mesh_planar(&face, &frame, &loops, &mut pts, size);
+        if let Some(frame) = planar_frame(face, &loops, &pts.nodes, size) {
+            tris = mesh_planar(face, &frame, &loops, &mut pts, size);
         }
         if tris.is_empty() {
-            tris = mesh_from_tess(&face, &tess, &loops, &mut pts, size);
+            tris = mesh_from_tess(face, &tess, &loops, &mut pts, size);
         }
         if tris.is_empty() {
             continue;
         }
-        enforce_size(&face, &loops, &mut pts, &mut tris, size);
+        enforce_size(face, &loops, &mut pts, &mut tris, size);
         let fid = face.id();
         for t in tris {
             if t[0] == t[1] || t[1] == t[2] || t[2] == t[0] {
                 continue;
             }
-            let t = orient_outward(&pts.nodes, t, &face);
+            let t = orient_outward(&pts.nodes, t, face);
             triangles.push(orient_from_solid(solid, &pts.nodes, t));
             face_ids.push(fid);
         }
@@ -393,7 +395,7 @@ fn planar_frame(face: &Face, loops: &[Vec<u32>], nodes: &[[f32; 3]], size: f64) 
         return None;
     }
     let origin = pts.iter().copied().sum::<DVec3>() / pts.len() as f64;
-    let (_, mut n) = face.project(origin);
+    let (_, mut n) = try_face_project(face, origin)?;
     if n.length_squared() < 1e-18 {
         return None;
     }
@@ -481,7 +483,9 @@ fn mesh_planar(
                 if !in_loops(uv, &loops2) || dist_to_loops(uv, &loops2) < min_d {
                     continue;
                 }
-                let p = face.project(lift(frame, uv)).0;
+                let Some((p, _)) = try_face_project(face, lift(frame, uv)) else {
+                    continue;
+                };
                 let id = pts.insert(p);
                 if !ids.contains(&id) {
                     ids.push(id);
@@ -546,7 +550,9 @@ fn mesh_from_tess(
                     snapped = Some(n);
                 }
             }
-            map[vi] = snapped.unwrap_or_else(|| pts.insert(face.project(p).0));
+            // CAD tessellation vertices already lie on this face. Re-projecting
+            // them is redundant and can make OCCT's extrema solver fail.
+            map[vi] = snapped.unwrap_or_else(|| pts.insert(p));
         }
     }
     let mut tris = Vec::new();
@@ -600,10 +606,11 @@ fn enforce_size(
         let pb = dvec(pts.nodes[b as usize]);
         let mid = (pa + pb) * 0.5;
         let q = if is_loop_segment(loops, a, b) {
-            project_to_face_edges(face, mid)
+            Some(project_to_face_edges(face, mid))
         } else {
-            face.project(mid).0
+            try_face_project(face, mid).map(|(point, _)| point)
         };
+        let Some(q) = q else { break };
         let m = pts.insert(q);
         if m == a || m == b {
             break;
@@ -661,8 +668,9 @@ fn orient_outward(nodes: &[[f32; 3]], mut t: [u32; 3], face: &Face) -> [u32; 3] 
     let b = dvec(nodes[t[1] as usize]);
     let c = dvec(nodes[t[2] as usize]);
     let g = (a + b + c) / 3.0;
-    let (_, n) = face.project(g);
-    if (b - a).cross(c - a).dot(n) < 0.0 {
+    if let Some((_, n)) = try_face_project(face, g)
+        && (b - a).cross(c - a).dot(n) < 0.0
+    {
         t.swap(1, 2);
     }
     t
@@ -781,7 +789,12 @@ fn tet_fill(
     Ok(tets)
 }
 
-fn tet_skin(solid: &Solid, nodes: &[[f32; 3]], tets: &[[u32; 4]]) -> (Vec<[u32; 3]>, Vec<u64>) {
+fn tet_skin(
+    nodes: &[[f32; 3]],
+    tets: &[[u32; 4]],
+    surface: &[[u32; 3]],
+    surface_face_ids: &[u64],
+) -> (Vec<[u32; 3]>, Vec<u64>) {
     let mut count: HashMap<[u32; 3], u32> = HashMap::new();
     for tet in tets {
         for face in tet_faces_undirected(*tet) {
@@ -800,7 +813,7 @@ fn tet_skin(solid: &Solid, nodes: &[[f32; 3]], tets: &[[u32; 4]]) -> (Vec<[u32; 
                 + dvec(nodes[tri[1] as usize])
                 + dvec(nodes[tri[2] as usize]))
                 / 3.0;
-            fids.push(cad_face_id(solid, c));
+            fids.push(surface_face_id(nodes, surface, surface_face_ids, c));
             tris.push(tri);
         }
     }
@@ -831,20 +844,37 @@ fn face_away(nodes: &[[f32; 3]], a: u32, b: u32, c: u32, opp: u32) -> [u32; 3] {
     }
 }
 
-fn cad_face_id(solid: &Solid, p: DVec3) -> u64 {
-    let mut best = 0;
+fn surface_face_id(
+    nodes: &[[f32; 3]],
+    surface: &[[u32; 3]],
+    surface_face_ids: &[u64],
+    p: DVec3,
+) -> u64 {
+    let mut best = surface_face_ids.first().copied().unwrap_or(0);
     let mut best_d = f64::INFINITY;
-    for face in solid.iter_face() {
-        let (q, _) = face.project(p);
-        let d = (q - p).length_squared();
+    for (triangle, face_id) in surface.iter().zip(surface_face_ids) {
+        let center = (dvec(nodes[triangle[0] as usize])
+            + dvec(nodes[triangle[1] as usize])
+            + dvec(nodes[triangle[2] as usize]))
+            / 3.0;
+        let d = (center - p).length_squared();
         if d < best_d {
             best_d = d;
-            best = face.id();
+            best = *face_id;
         }
     }
     best
 }
 
+fn try_face_project(face: &Face, point: DVec3) -> Option<(DVec3, DVec3)> {
+    catch_projection(|| face.project(point))
+}
+
+fn catch_projection(project: impl FnOnce() -> (DVec3, DVec3)) -> Option<(DVec3, DVec3)> {
+    catch_unwind(AssertUnwindSafe(project)).ok()
+}
+
+#[cfg(test)]
 fn covers_surface(tets: &[[u32; 4]], tris: &[[u32; 3]]) -> bool {
     if tets.is_empty() {
         return false;
@@ -856,7 +886,7 @@ fn covers_surface(tets: &[[u32; 4]], tris: &[[u32; 3]]) -> bool {
         }
     }
     tris.iter()
-        .all(|t| faces.contains(&face_key(t[0], t[1], t[2])))
+        .all(|triangle| faces.contains(&face_key(triangle[0], triangle[1], triangle[2])))
 }
 
 fn tet_faces_undirected(tet: [u32; 4]) -> [[u32; 3]; 4] {
@@ -1341,6 +1371,33 @@ mod tests {
     use super::*;
     use crate::geometry::CreateKind;
     use crate::session::Session;
+
+    #[test]
+    fn face_projection_panic_is_recoverable() {
+        assert!(catch_projection(|| panic!("simulated projection failure")).is_none());
+    }
+
+    #[test]
+    fn volume_boundary_face_ids_reuse_surface_mesh_labels() {
+        let nodes = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ];
+        let surface = [[0, 1, 2], [3, 4, 5]];
+        let labels = [17, 42];
+        assert_eq!(
+            surface_face_id(&nodes, &surface, &labels, DVec3::new(0.25, 0.25, 0.05)),
+            17
+        );
+        assert_eq!(
+            surface_face_id(&nodes, &surface, &labels, DVec3::new(0.25, 0.25, 0.95)),
+            42
+        );
+    }
 
     #[test]
     fn surface_mesh_respects_size() {

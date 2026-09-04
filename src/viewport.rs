@@ -104,9 +104,10 @@ impl Viewport {
         self.camera.look_isometric();
     }
 
-    pub fn show(&mut self, ui: &mut Ui, document: &mut Document) {
+    pub fn show(&mut self, ui: &mut Ui, document: &mut Document) -> Option<DisplayOptions> {
+        let mut display_change = None;
         ui.vertical(|ui| {
-            self.display_bar(ui);
+            display_change = self.display_bar(ui);
             let available = ui.available_size();
             if available.x < 1.0 || available.y < 1.0 {
                 return;
@@ -130,16 +131,18 @@ impl Viewport {
             }
             paint_gnomon(&painter, response.rect, &self.camera);
         });
+        display_change
     }
 
-    fn display_bar(&mut self, ui: &mut Ui) {
+    fn display_bar(&mut self, ui: &mut Ui) -> Option<DisplayOptions> {
+        let mut display = self.display;
         ui.horizontal(|ui| {
-            ui.toggle_value(&mut self.display.faces, "Faces");
-            ui.toggle_value(&mut self.display.edges, "Edges");
-            ui.toggle_value(&mut self.display.mesh, "Mesh");
-            ui.toggle_value(&mut self.display.vertices, "Vertices");
+            ui.toggle_value(&mut display.faces, "Faces");
+            ui.toggle_value(&mut display.edges, "Edges");
+            ui.toggle_value(&mut display.mesh, "Mesh");
+            ui.toggle_value(&mut display.vertices, "Vertices");
             ui.separator();
-            ui.toggle_value(&mut self.display.clip, "Clip");
+            ui.toggle_value(&mut display.clip, "Clip");
         });
         ui.horizontal(|ui| {
             ui.label("Select");
@@ -155,31 +158,33 @@ impl Viewport {
                 ui.selectable_value(&mut self.pick, mode, mode.label());
             }
         });
-        if self.display.clip {
+        if display.clip {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.display.clip_axis, ClipAxis::X, "X");
-                ui.selectable_value(&mut self.display.clip_axis, ClipAxis::Y, "Y");
-                ui.selectable_value(&mut self.display.clip_axis, ClipAxis::Z, "Z");
-                ui.add(egui::Slider::new(&mut self.display.clip_t, 0.0..=1.0).show_value(false));
-                ui.toggle_value(&mut self.display.clip_flip, "Flip");
+                ui.selectable_value(&mut display.clip_axis, ClipAxis::X, "X");
+                ui.selectable_value(&mut display.clip_axis, ClipAxis::Y, "Y");
+                ui.selectable_value(&mut display.clip_axis, ClipAxis::Z, "Z");
+                ui.add(egui::Slider::new(&mut display.clip_t, 0.0..=1.0).show_value(false));
+                ui.toggle_value(&mut display.clip_flip, "Flip");
             });
         }
+        (display != self.display).then_some(display)
     }
 
     fn handle_input(&mut self, response: &Response, ui: &Ui, document: &mut Document) {
-        if response.double_clicked() {
-            if let Some(bbox) = document.selection_bbox().or_else(|| document.bbox()) {
-                self.camera.fit(bbox);
-            }
+        if response.double_clicked()
+            && let Some(bbox) = document.selection_bbox().or_else(|| document.bbox())
+        {
+            self.camera.fit(bbox);
         }
 
-        if response.clicked() && self.pick != PickMode::Off {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let clip = clip_plane(document, &self.display);
-                let hit = pick::pick(document, &self.camera, response.rect, pos, self.pick, clip);
-                let (add, toggle) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
-                pick::apply_click(document, hit, add, toggle);
-            }
+        if response.clicked()
+            && self.pick != PickMode::Off
+            && let Some(pos) = response.interact_pointer_pos()
+        {
+            let clip = clip_plane(document, &self.display);
+            let hit = pick::pick(document, &self.camera, response.rect, pos, self.pick, clip);
+            let (add, toggle) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+            pick::apply_click(document, hit, add, toggle);
         }
 
         if response.dragged_by(PointerButton::Primary) && !ui.input(|i| i.modifiers.shift) {
@@ -380,6 +385,7 @@ pub fn clip_plane(document: &Document, display: &DisplayOptions) -> Option<[f32;
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

@@ -9,6 +9,7 @@ use crate::project::{self, ProjectError};
 pub struct Session {
     pub document: Document,
     history: History,
+    revision: u64,
 }
 
 impl Session {
@@ -16,12 +17,14 @@ impl Session {
         Self {
             document: Document::new(),
             history: History::default(),
+            revision: 0,
         }
     }
 
     pub fn run(&mut self, mut cmd: Box<dyn Command>) -> Result<String, CommandError> {
         cmd.execute(&mut self.document)?;
         self.document.dirty = true;
+        self.bump_revision();
         let message = cmd.message().to_string();
         self.history.push(cmd);
         Ok(message)
@@ -30,6 +33,7 @@ impl Session {
     pub fn new_project(&mut self) {
         self.document = Document::new();
         self.history = History::default();
+        self.bump_revision();
     }
 
     pub fn open_project(&mut self, path: &Path) -> Result<String, ProjectError> {
@@ -38,6 +42,7 @@ impl Session {
         document.dirty = false;
         self.document = document;
         self.history = History::default();
+        self.bump_revision();
         Ok(format!("Opened {}.", crate::document::file_stem(path)))
     }
 
@@ -110,6 +115,7 @@ impl Session {
         let message = self.history.undo(&mut self.document)?;
         if message.is_some() {
             self.document.dirty = true;
+            self.bump_revision();
         }
         Ok(message)
     }
@@ -118,6 +124,7 @@ impl Session {
         let message = self.history.redo(&mut self.document)?;
         if message.is_some() {
             self.document.dirty = true;
+            self.bump_revision();
         }
         Ok(message)
     }
@@ -136,6 +143,14 @@ impl Session {
 
     pub fn redo_label(&self) -> Option<&str> {
         self.history.redo_label()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.saturating_add(1);
     }
 }
 
@@ -253,6 +268,28 @@ mod tests {
         assert!(session.document.models.is_empty());
         session.redo().unwrap();
         assert_eq!(session.document.models[0].name, "Box");
+    }
+
+    #[test]
+    fn revision_is_monotonic_across_new_and_open() {
+        let path = write_cube("oxiprep_session_revision.step");
+        let project = std::env::temp_dir().join("oxiprep_session_revision.oxiprep");
+        let mut source = Session::new();
+        source.import_path(&path).unwrap();
+        source.save_to(&project).unwrap();
+
+        let mut session = Session::new();
+        assert_eq!(session.revision(), 0);
+        session.new_project();
+        assert_eq!(session.revision(), 1);
+        session.open_project(&project).unwrap();
+        assert_eq!(session.revision(), 2);
+        let stable = session.revision();
+        session.save().unwrap();
+        assert_eq!(session.revision(), stable);
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(project);
     }
 
     #[test]

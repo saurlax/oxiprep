@@ -304,15 +304,14 @@ impl CreateTool {
     pub fn line_from_document(document: &Document) -> Self {
         let mut pts = Vec::new();
         for s in &document.selection {
-            if let crate::document::Selection::Vertex { model, body, index } = *s {
-                if let Some(p) = document
+            if let crate::document::Selection::Vertex { model, body, index } = *s
+                && let Some(p) = document
                     .models
                     .get(model)
                     .and_then(|m| m.bodies.get(body))
                     .and_then(|b| b.display.cad_vertices.get(index as usize))
-                {
-                    pts.push([p[0] as f64, p[1] as f64, p[2] as f64]);
-                }
+            {
+                pts.push([p[0] as f64, p[1] as f64, p[2] as f64]);
             }
         }
         let kind = if pts.len() >= 2 {

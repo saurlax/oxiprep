@@ -356,6 +356,12 @@ impl Body {
     }
 }
 
+impl Default for Document {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Document {
     pub fn new() -> Self {
         Self {
@@ -453,6 +459,7 @@ impl Document {
         self.selection.first().map(|s| s.model())
     }
 
+    #[cfg(test)]
     pub(crate) fn push_imported(
         &mut self,
         name: &str,
@@ -734,7 +741,7 @@ pub fn body_from_point(name: impl Into<String>, point: DVec3) -> Body {
 
 fn unique_name<'a>(existing: impl Iterator<Item = &'a str>, base: &str) -> String {
     let used: Vec<&str> = existing.collect();
-    if !used.iter().any(|n| *n == base) {
+    if !used.contains(&base) {
         return base.to_string();
     }
     let mut n = 2;

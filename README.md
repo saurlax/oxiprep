@@ -23,6 +23,13 @@ cargo bundle --release
 
 The first build downloads a prebuilt OpenCASCADE library.
 
+### Local AI adapter
+
+The built-in Codex profile expects `codex-acp` on `PATH`. Oxiprep never installs
+the adapter automatically. Install it manually with
+`npm install -g @agentclientprotocol/codex-acp`, or edit the profile to run
+`npx` with the arguments `-y` and `@agentclientprotocol/codex-acp`.
+
 ## Contributing
 
 Issues and pull requests are welcome. Product changes are managed with

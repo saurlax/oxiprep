@@ -249,6 +249,7 @@ fn pick_node(
     best
 }
 
+#[allow(clippy::too_many_arguments)]
 fn closest_node(
     mesh: &crate::document::DisplayMesh,
     camera: &Camera,

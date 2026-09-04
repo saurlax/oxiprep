@@ -2,6 +2,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
+type TriangleMesh = (Vec<[f32; 3]>, Vec<[u32; 3]>);
+
 use cadrum::Solid;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,7 +126,7 @@ fn load_stl(path: &Path) -> Result<ImportedModel, ImportError> {
     })
 }
 
-fn parse_stl(bytes: &[u8]) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
+fn parse_stl(bytes: &[u8]) -> Option<TriangleMesh> {
     if is_ascii_stl(bytes) {
         parse_ascii_stl(bytes)
     } else {
@@ -153,7 +155,7 @@ fn is_ascii_stl(bytes: &[u8]) -> bool {
     expected != bytes.len()
 }
 
-fn parse_binary_stl(bytes: &[u8]) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
+fn parse_binary_stl(bytes: &[u8]) -> Option<TriangleMesh> {
     if bytes.len() < 84 {
         return None;
     }
@@ -166,9 +168,9 @@ fn parse_binary_stl(bytes: &[u8]) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
     for i in 0..count {
         let off = 84 + i * 50;
         let mut verts = [[0f32; 3]; 3];
-        for v in 0..3 {
+        for (v, vertex) in verts.iter_mut().enumerate() {
             let vo = off + 12 + v * 12;
-            verts[v] = [
+            *vertex = [
                 f32::from_le_bytes(bytes[vo..vo + 4].try_into().ok()?),
                 f32::from_le_bytes(bytes[vo + 4..vo + 8].try_into().ok()?),
                 f32::from_le_bytes(bytes[vo + 8..vo + 12].try_into().ok()?),
@@ -181,7 +183,7 @@ fn parse_binary_stl(bytes: &[u8]) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
     Some((positions, triangles))
 }
 
-fn parse_ascii_stl(bytes: &[u8]) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
+fn parse_ascii_stl(bytes: &[u8]) -> Option<TriangleMesh> {
     let text = std::str::from_utf8(bytes).ok()?;
     let mut positions = Vec::new();
     let mut triangles = Vec::new();

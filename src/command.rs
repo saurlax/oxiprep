@@ -1,3 +1,4 @@
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 use crate::document::{AnalysisMesh, Body, DisplayMesh, Document, Model, Selection, file_stem};
@@ -326,7 +327,7 @@ enum Removal {
     Body {
         model: usize,
         index: usize,
-        held: Option<Body>,
+        held: Option<Box<Body>>,
     },
 }
 
@@ -371,11 +372,11 @@ impl Command for Delete {
         for item in &mut self.plan {
             match item {
                 Removal::Body { model, index, held } => {
-                    *held = Some(
+                    *held = Some(Box::new(
                         document
                             .take_body(*model, *index)
                             .ok_or(CommandError::NothingToDelete)?,
-                    );
+                    ));
                 }
                 Removal::Model { index, held } => {
                     *held = Some(
@@ -398,7 +399,7 @@ impl Command for Delete {
                 }
                 Removal::Body { model, index, held } => {
                     let body = held.take().ok_or(CommandError::NothingToDelete)?;
-                    if !document.insert_body(*model, *index, body) {
+                    if !document.insert_body(*model, *index, *body) {
                         return Err(CommandError::NothingToDelete);
                     }
                 }
@@ -424,10 +425,10 @@ fn plan_deletions(document: &Document) -> Vec<Removal> {
                 models.insert(m);
             }
             _ => {
-                if let Some(b) = s.body() {
-                    if document.models[m].bodies.get(b).is_some() {
-                        bodies.insert((m, b));
-                    }
+                if let Some(b) = s.body()
+                    && document.models[m].bodies.get(b).is_some()
+                {
+                    bodies.insert((m, b));
                 }
             }
         }
@@ -493,6 +494,7 @@ pub struct MeshBodies {
     targets: Vec<(usize, usize)>,
     prev: Vec<MeshBackup>,
     next: Vec<AnalysisMesh>,
+    generate: fn(&cadrum::Solid, crate::mesh::MeshKind, f64) -> Result<AnalysisMesh, CommandError>,
 }
 
 impl MeshBodies {
@@ -520,7 +522,21 @@ impl MeshBodies {
             targets,
             prev: Vec::new(),
             next: Vec::new(),
+            generate: crate::mesh::generate,
         })
+    }
+
+    #[cfg(test)]
+    fn with_generator(
+        mut self,
+        generate: fn(
+            &cadrum::Solid,
+            crate::mesh::MeshKind,
+            f64,
+        ) -> Result<AnalysisMesh, CommandError>,
+    ) -> Self {
+        self.generate = generate;
+        self
     }
 }
 
@@ -546,7 +562,11 @@ impl Command for MeshBodies {
                     Some(crate::document::BodyShape::Solid(solid)) => solid,
                     _ => return Err(CommandError::Failed("Select a solid.".to_string())),
                 };
-                generated.push(crate::mesh::generate(solid, self.kind, self.size)?);
+                let generated_mesh = catch_unwind(AssertUnwindSafe(|| {
+                    (self.generate)(solid, self.kind, self.size)
+                }))
+                .map_err(|_| CommandError::Failed("Could not mesh the solid.".to_owned()))??;
+                generated.push(generated_mesh);
             }
             for &(mi, bi) in &self.targets {
                 let body = &document.models[mi].bodies[bi];
@@ -576,5 +596,42 @@ impl Command for MeshBodies {
             body.mesh = prev.mesh.clone();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::CreateKind;
+    use crate::mesh::MeshKind;
+    use crate::session::Session;
+
+    fn panicking_mesh_generator(
+        _solid: &cadrum::Solid,
+        _kind: MeshKind,
+        _size: f64,
+    ) -> Result<AnalysisMesh, CommandError> {
+        panic!("simulated CAD projection failure")
+    }
+
+    #[test]
+    fn mesh_kernel_panic_becomes_error_without_partial_command_state() {
+        let mut session = Session::new();
+        let model = CreateKind::r#box().into_model(&session.document).unwrap();
+        session.create_model(model).unwrap();
+        let revision = session.revision();
+        let selection = session.document.selection.clone();
+        let undo_label = session.undo_label().map(str::to_owned);
+
+        let command = MeshBodies::new(&session.document, MeshKind::Volume, 0.5)
+            .unwrap()
+            .with_generator(panicking_mesh_generator);
+        let error = session.run(Box::new(command)).unwrap_err();
+
+        assert_eq!(error.message(), "Could not mesh the solid.");
+        assert_eq!(session.revision(), revision);
+        assert_eq!(session.document.selection, selection);
+        assert_eq!(session.undo_label(), undo_label.as_deref());
+        assert!(session.document.models[0].bodies[0].mesh.is_none());
     }
 }

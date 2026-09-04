@@ -3,13 +3,18 @@ use eframe::egui::{self, Id, KeyboardShortcut, Modifiers, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 use std::path::Path;
 
-use crate::command::CommandError;
+use crate::ai::controller::AiController;
+use crate::ai::ui::AiPanel;
+use crate::app_operation::{
+    AppOperationRequest, HostApproval, create_arguments, dispatch, selected_entities,
+};
 use crate::document::{Body, BodyStats, Document, Model, Selection};
 use crate::geometry::{Axis, CreateKind, CreateTool, Plane};
 use crate::mesh::{MeshKind, MeshTool};
 use crate::session::Session;
-use crate::viewport::Viewport;
+use crate::viewport::{ClipAxis, DisplayOptions, Viewport};
 use eframe::CreationContext;
+use serde_json::json;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Tab {
@@ -17,6 +22,7 @@ enum Tab {
     Viewport,
     Properties,
     Console,
+    AI,
 }
 
 impl Tab {
@@ -26,7 +32,16 @@ impl Tab {
             Self::Viewport => "Viewport",
             Self::Properties => "Properties",
             Self::Console => "Console",
+            Self::AI => "AI",
         }
+    }
+}
+
+fn tab_scroll_bars(tab: &Tab) -> [bool; 2] {
+    if matches!(tab, Tab::AI) {
+        [false, false]
+    } else {
+        [true, true]
     }
 }
 
@@ -37,34 +52,34 @@ pub struct OxiprepApp {
     console: Vec<String>,
     create: Option<CreateTool>,
     mesh: Option<MeshTool>,
+    ai: AiController,
+    ai_panel: AiPanel,
 }
 
 impl OxiprepApp {
     pub fn new(cc: &CreationContext<'_>) -> Self {
-        let mut dock_state = DockState::new(vec![Tab::Viewport]);
-        let surface = dock_state.main_surface_mut();
-        let [center, _] = surface.split_left(NodeIndex::root(), 0.22, vec![Tab::Outliner]);
-        let [center, _] = surface.split_right(center, 0.74, vec![Tab::Properties]);
-        let _ = surface.split_below(center, 0.78, vec![Tab::Console]);
         Self {
-            dock_state,
+            dock_state: default_dock_state(),
             session: Session::new(),
             viewport: Viewport::new(cc.wgpu_render_state.clone()),
             console: Vec::new(),
             create: None,
             mesh: None,
+            ai: AiController::new(&cc.egui_ctx),
+            ai_panel: AiPanel::default(),
         }
     }
 
-    fn log(&mut self, message: impl Into<String>) {
-        self.console.push(message.into());
-    }
-
     fn new_project(&mut self) {
-        self.session.new_project();
+        dispatch_gui(
+            &mut self.session,
+            &mut self.viewport,
+            &mut self.console,
+            AppOperationRequest::new("project.new", json!({})),
+            HostApproval::Approved,
+        );
         self.create = None;
         self.mesh = None;
-        self.log("New project.");
     }
 
     fn open_project_dialog(&mut self) {
@@ -77,19 +92,16 @@ impl OxiprepApp {
     }
 
     fn open_project_path(&mut self, path: &Path) {
-        match self.session.open_project(path) {
-            Ok(message) => {
-                self.create = None;
-                self.mesh = None;
-                self.log(message);
-                if let Some(bbox) = self.session.document.bbox() {
-                    self.viewport.fit(bbox);
-                }
-            }
-            Err(err) => {
-                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                self.log(format!("{name}: {}", err.message()));
-            }
+        let result = dispatch_gui(
+            &mut self.session,
+            &mut self.viewport,
+            &mut self.console,
+            AppOperationRequest::new("project.open", json!({"path": path})),
+            HostApproval::Approved,
+        );
+        if result.is_some() {
+            self.create = None;
+            self.mesh = None;
         }
     }
 
@@ -102,10 +114,13 @@ impl OxiprepApp {
     }
 
     fn apply_save(&mut self) {
-        match self.session.save() {
-            Ok(message) => self.log(message),
-            Err(err) => self.log(err.message()),
-        }
+        dispatch_gui(
+            &mut self.session,
+            &mut self.viewport,
+            &mut self.console,
+            AppOperationRequest::new("project.save", json!({})),
+            HostApproval::NotRequired,
+        );
     }
 
     fn save_as_dialog(&mut self) {
@@ -119,10 +134,13 @@ impl OxiprepApp {
             } else {
                 path.with_extension("oxiprep")
             };
-            match self.session.save_to(&path) {
-                Ok(message) => self.log(message),
-                Err(err) => self.log(err.message()),
-            }
+            dispatch_gui(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                AppOperationRequest::new("project.save_as", json!({"path": path})),
+                HostApproval::Approved,
+            );
         }
     }
 
@@ -162,41 +180,51 @@ impl OxiprepApp {
     }
 
     fn import_paths(&mut self, paths: &[impl AsRef<Path>]) {
-        let mut last_index = None;
         for path in paths {
             let path = path.as_ref();
-            match self.session.import_path(path) {
-                Ok(message) => {
-                    self.log(message);
-                    last_index = Some(self.session.document.models.len() - 1);
-                }
-                Err(err) => {
-                    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                    self.log(format!("{name}: {}", err.message()));
-                }
-            }
-        }
-        if let Some(index) = last_index {
-            if let Some(bbox) = crate::document::bbox_of_model(&self.session.document.models[index])
-            {
-                self.viewport.fit(bbox);
-            }
+            dispatch_gui(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                AppOperationRequest::new("document.import", json!({"path": path})),
+                HostApproval::NotRequired,
+            );
         }
     }
 
     fn apply_undo(&mut self) {
-        log_history(&mut self.console, self.session.undo());
+        dispatch_gui(
+            &mut self.session,
+            &mut self.viewport,
+            &mut self.console,
+            AppOperationRequest::new("history.undo", json!({})),
+            HostApproval::NotRequired,
+        );
     }
 
     fn apply_redo(&mut self) {
-        log_history(&mut self.console, self.session.redo());
+        dispatch_gui(
+            &mut self.session,
+            &mut self.viewport,
+            &mut self.console,
+            AppOperationRequest::new("history.redo", json!({})),
+            HostApproval::NotRequired,
+        );
     }
 
     fn apply_delete(&mut self) {
-        match self.session.delete_selected() {
-            Ok(message) => self.log(message),
-            Err(err) => self.log(err.message()),
-        }
+        let targets = selected_entities(&self.session.document);
+        let revision = self.session.revision();
+        dispatch_gui(
+            &mut self.session,
+            &mut self.viewport,
+            &mut self.console,
+            AppOperationRequest::new(
+                "document.delete",
+                json!({"revision": revision, "targets": targets}),
+            ),
+            HostApproval::NotRequired,
+        );
     }
 
     fn start_create(&mut self, tool: CreateTool) {
@@ -210,12 +238,23 @@ impl OxiprepApp {
     }
 }
 
+fn default_dock_state() -> DockState<Tab> {
+    let mut dock_state = DockState::new(vec![Tab::Viewport]);
+    let surface = dock_state.main_surface_mut();
+    let [center, _] = surface.split_left(NodeIndex::root(), 0.22, vec![Tab::Outliner]);
+    let [center, _] = surface.split_right(center, 0.74, vec![Tab::Properties, Tab::AI]);
+    let _ = surface.split_below(center, 0.78, vec![Tab::Console]);
+    dock_state
+}
+
 impl eframe::App for OxiprepApp {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         visuals.panel_fill.to_normalized_gamma_f32()
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.ai
+            .update(&mut self.session, &mut self.viewport, &mut self.console);
         let open_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::O);
         let new_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::N);
         let save_shortcut = KeyboardShortcut::new(Modifiers::COMMAND, egui::Key::S);
@@ -292,6 +331,7 @@ impl eframe::App for OxiprepApp {
             Some(label) => format!("Redo {label}"),
             None => "Redo".to_string(),
         };
+        let mut requested_display = self.viewport.display;
 
         egui::Panel::top("menu_bar").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -484,15 +524,24 @@ impl eframe::App for OxiprepApp {
                         ui.close();
                     }
                     ui.separator();
-                    ui.toggle_value(&mut self.viewport.display.faces, "Faces");
-                    ui.toggle_value(&mut self.viewport.display.edges, "Edges");
-                    ui.toggle_value(&mut self.viewport.display.mesh, "Mesh");
-                    ui.toggle_value(&mut self.viewport.display.vertices, "Vertices");
+                    ui.toggle_value(&mut requested_display.faces, "Faces");
+                    ui.toggle_value(&mut requested_display.edges, "Edges");
+                    ui.toggle_value(&mut requested_display.mesh, "Mesh");
+                    ui.toggle_value(&mut requested_display.vertices, "Vertices");
                     ui.separator();
-                    ui.toggle_value(&mut self.viewport.display.clip, "Clip");
+                    ui.toggle_value(&mut requested_display.clip, "Clip");
                 });
             });
         });
+
+        if self.viewport.display != requested_display {
+            apply_viewport_display(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                requested_display,
+            );
+        }
 
         if new {
             self.new_project();
@@ -512,11 +561,18 @@ impl eframe::App for OxiprepApp {
         if import_mesh {
             self.import_mesh_dialog();
         }
-        if close {
-            match self.session.close_selected() {
-                Ok(message) => self.log(message),
-                Err(err) => self.log(err.message()),
-            }
+        if close && let Some(model) = self.session.document.selected_model_index() {
+            let revision = self.session.revision();
+            dispatch_gui(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                AppOperationRequest::new(
+                    "document.close",
+                    json!({"revision": revision, "model": model}),
+                ),
+                HostApproval::NotRequired,
+            );
         }
         if undo {
             self.apply_undo();
@@ -531,20 +587,53 @@ impl eframe::App for OxiprepApp {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if fit_all {
-            if let Some(bbox) = self.session.document.bbox() {
-                self.viewport.fit(bbox);
-            }
+            dispatch_gui(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                AppOperationRequest::new("view.fit_all", json!({})),
+                HostApproval::NotRequired,
+            );
         }
         if fit_sel {
-            if let Some(bbox) = self.session.document.selection_bbox() {
-                self.viewport.fit(bbox);
-            }
+            dispatch_gui(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                AppOperationRequest::new("view.fit_selection", json!({})),
+                HostApproval::NotRequired,
+            );
         }
         if let Some(dir) = look {
-            self.viewport.look_along(dir);
+            let direction = if dir == DVec3::X {
+                "+x"
+            } else if dir == -DVec3::X {
+                "-x"
+            } else if dir == DVec3::Y {
+                "+y"
+            } else if dir == -DVec3::Y {
+                "-y"
+            } else if dir == DVec3::Z {
+                "+z"
+            } else {
+                "-z"
+            };
+            dispatch_gui(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                AppOperationRequest::new("view.standard", json!({"direction": direction})),
+                HostApproval::NotRequired,
+            );
         }
         if look_iso {
-            self.viewport.look_isometric();
+            dispatch_gui(
+                &mut self.session,
+                &mut self.viewport,
+                &mut self.console,
+                AppOperationRequest::new("view.standard", json!({"direction": "isometric"})),
+                HostApproval::NotRequired,
+            );
         }
 
         egui::Panel::bottom("status_bar").show(ui, |ui| {
@@ -585,6 +674,8 @@ impl eframe::App for OxiprepApp {
             console,
             create,
             mesh,
+            ai,
+            ai_panel,
         } = self;
 
         egui::CentralPanel::no_frame()
@@ -600,6 +691,8 @@ impl eframe::App for OxiprepApp {
                             console,
                             create,
                             mesh,
+                            ai,
+                            ai_panel,
                         },
                     );
             });
@@ -612,6 +705,8 @@ struct OxiprepTabs<'a> {
     console: &'a mut Vec<String>,
     create: &'a mut Option<CreateTool>,
     mesh: &'a mut Option<MeshTool>,
+    ai: &'a mut AiController,
+    ai_panel: &'a mut AiPanel,
 }
 
 impl TabViewer for OxiprepTabs<'_> {
@@ -627,8 +722,12 @@ impl TabViewer for OxiprepTabs<'_> {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
-            Tab::Outliner => outliner_ui(ui, self.session, self.console),
-            Tab::Viewport => self.viewport.show(ui, &mut self.session.document),
+            Tab::Outliner => outliner_ui(ui, self.session, self.viewport, self.console),
+            Tab::Viewport => {
+                if let Some(display) = self.viewport.show(ui, &mut self.session.document) {
+                    apply_viewport_display(self.session, self.viewport, self.console, display);
+                }
+            }
             Tab::Properties => properties_ui(
                 ui,
                 self.session,
@@ -638,11 +737,23 @@ impl TabViewer for OxiprepTabs<'_> {
                 self.mesh,
             ),
             Tab::Console => console_ui(ui, self.console),
+            Tab::AI => self
+                .ai_panel
+                .show(ui, self.ai, self.session, self.viewport, self.console),
         }
+    }
+
+    fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
+        tab_scroll_bars(tab)
     }
 }
 
-fn outliner_ui(ui: &mut Ui, session: &mut Session, console: &mut Vec<String>) {
+fn outliner_ui(
+    ui: &mut Ui,
+    session: &mut Session,
+    viewport: &mut Viewport,
+    console: &mut Vec<String>,
+) {
     if session.document.is_empty() {
         ui.label("No models loaded.");
         return;
@@ -699,16 +810,27 @@ fn outliner_ui(ui: &mut Ui, session: &mut Session, console: &mut Vec<String>) {
             model: mi,
             body: bi,
         }];
-        match session.delete_selected() {
-            Ok(message) => console.push(message),
-            Err(err) => console.push(err.message().to_string()),
-        }
+        let revision = session.revision();
+        dispatch_gui(
+            session,
+            viewport,
+            console,
+            AppOperationRequest::new(
+                "document.delete",
+                json!({"revision": revision, "targets": [{"kind": "body", "model": mi, "body": bi}]}),
+            ),
+            HostApproval::NotRequired,
+        );
     }
     if let Some(mi) = close {
-        match session.close_model(mi) {
-            Ok(message) => console.push(message),
-            Err(err) => console.push(err.message().to_string()),
-        }
+        let revision = session.revision();
+        dispatch_gui(
+            session,
+            viewport,
+            console,
+            AppOperationRequest::new("document.close", json!({"revision": revision, "model": mi})),
+            HostApproval::NotRequired,
+        );
     }
 }
 
@@ -968,13 +1090,10 @@ fn mesh_properties_ui(
                 .add_enabled(can_mesh, egui::Button::new("Mesh"))
                 .clicked()
             {
-                match session.mesh_selected(tool.kind, tool.size) {
-                    Ok(message) => {
-                        console.push(message);
-                        viewport.display.mesh = true;
-                    }
-                    Err(err) => console.push(err.message().to_string()),
-                }
+                let kind = match tool.kind { MeshKind::Surface => "surface", MeshKind::Volume => "volume" };
+                let revision = session.revision();
+                let targets = selected_entities(&session.document);
+                dispatch_gui(session, viewport, console, AppOperationRequest::new("mesh.generate", json!({"revision": revision, "targets": targets, "kind": kind, "size": tool.size})), HostApproval::NotRequired);
             }
             if ui.button("Cancel").clicked() {
                 cancel = true;
@@ -1163,26 +1282,14 @@ fn apply_create(
         .add_to_current
         .then(|| session.document.selected_model_index())
         .flatten();
-    let result = if let Some(model) = add_to {
-        match tool.kind.into_body(&session.document, model) {
-            Ok(body) => session.add_body(model, body),
-            Err(err) => Err(err),
-        }
-    } else {
-        match tool.kind.into_model(&session.document) {
-            Ok(model) => session.create_model(model),
-            Err(err) => Err(err),
-        }
-    };
-    match result {
-        Ok(message) => {
-            console.push(message);
-            if let Some(bbox) = session.document.selection_bbox() {
-                viewport.fit(bbox);
-            }
-        }
-        Err(err) => console.push(err.message().to_string()),
-    }
+    let request = AppOperationRequest::new("geometry.create", create_arguments(tool.kind, add_to));
+    dispatch_gui(
+        session,
+        viewport,
+        console,
+        request,
+        HostApproval::NotRequired,
+    );
 }
 
 fn vec3_edit(ui: &mut Ui, v: &mut [f64; 3]) {
@@ -1234,12 +1341,58 @@ fn fmt_point(p: [f32; 3]) -> String {
     fmt_vec(DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64))
 }
 
-fn log_history(console: &mut Vec<String>, result: Result<Option<String>, CommandError>) {
-    match result {
-        Ok(Some(message)) => console.push(message),
-        Ok(None) => {}
-        Err(err) => console.push(err.message().to_string()),
+fn dispatch_gui(
+    session: &mut Session,
+    viewport: &mut Viewport,
+    console: &mut Vec<String>,
+    request: AppOperationRequest,
+    approval: HostApproval,
+) -> Option<crate::app_operation::AppOperationResult> {
+    match dispatch(&request, session, viewport, approval) {
+        Ok(result) => {
+            if let Some(message) = &result.message {
+                console.push(message.clone());
+            }
+            Some(result)
+        }
+        Err(error) => {
+            console.push(error.to_string());
+            None
+        }
     }
+}
+
+fn apply_viewport_display(
+    session: &mut Session,
+    viewport: &mut Viewport,
+    console: &mut Vec<String>,
+    display: DisplayOptions,
+) {
+    dispatch_gui(
+        session,
+        viewport,
+        console,
+        AppOperationRequest::new(
+            "view.display",
+            json!({"faces": display.faces, "edges": display.edges, "mesh": display.mesh, "vertices": display.vertices}),
+        ),
+        HostApproval::NotRequired,
+    );
+    let axis = match display.clip_axis {
+        ClipAxis::X => "x",
+        ClipAxis::Y => "y",
+        ClipAxis::Z => "z",
+    };
+    dispatch_gui(
+        session,
+        viewport,
+        console,
+        AppOperationRequest::new(
+            "view.clip",
+            json!({"enabled": display.clip, "axis": axis, "position": display.clip_t, "flip": display.clip_flip}),
+        ),
+        HostApproval::NotRequired,
+    );
 }
 
 fn console_ui(ui: &mut Ui, lines: &[String]) {
@@ -1251,4 +1404,122 @@ fn console_ui(ui: &mut Ui, lines: &[String]) {
                 ui.label(line);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cadrum::Solid;
+    use std::io::Write;
+
+    #[test]
+    fn default_layout_contains_every_baseline_panel_and_ai() {
+        let tabs = default_dock_state()
+            .iter_all_tabs()
+            .map(|(_, tab)| *tab)
+            .collect::<Vec<_>>();
+        assert_eq!(tabs.len(), 5);
+        for expected in [
+            Tab::Outliner,
+            Tab::Viewport,
+            Tab::Properties,
+            Tab::Console,
+            Tab::AI,
+        ] {
+            assert!(tabs.contains(&expected), "missing {} tab", expected.title());
+        }
+    }
+
+    #[test]
+    fn ai_tab_owns_its_scrolling() {
+        assert_eq!(tab_scroll_bars(&Tab::AI), [false, false]);
+        assert_eq!(tab_scroll_bars(&Tab::Properties), [true, true]);
+    }
+
+    #[test]
+    fn gui_dispatch_returns_and_logs_the_shared_operation_result_once() {
+        let mut session = Session::new();
+        let mut viewport = Viewport::new(None);
+        let mut console = Vec::new();
+        let result = dispatch_gui(
+            &mut session,
+            &mut viewport,
+            &mut console,
+            AppOperationRequest::new("geometry.create", json!({"kind": "box"})),
+            HostApproval::NotRequired,
+        )
+        .unwrap();
+
+        assert_eq!(result.revision, 1);
+        assert_eq!(result.message.as_deref(), Some("Created Box."));
+        assert_eq!(console, ["Created Box."]);
+        assert_eq!(session.undo_label(), Some("Create Box"));
+        assert_eq!(session.document.models.len(), 1);
+    }
+
+    #[test]
+    fn gui_and_agent_dispatch_match_for_document_mesh_history_import_and_view() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("import.step");
+        let mut file = std::fs::File::create(&path).unwrap();
+        Solid::write_step(
+            std::iter::once(&Solid::cube(DVec3::ZERO, DVec3::ONE)),
+            &mut file,
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let mut gui_session = Session::new();
+        let mut gui_viewport = Viewport::new(None);
+        let mut console = Vec::new();
+        let mut agent_session = Session::new();
+        let mut agent_viewport = Viewport::new(None);
+
+        let requests = [
+            AppOperationRequest::new("geometry.create", json!({"kind": "box"})),
+            AppOperationRequest::new("document.import", json!({"path": path})),
+            AppOperationRequest::new(
+                "mesh.generate",
+                json!({"revision": 2, "targets": [{"kind": "model", "model": 1}], "kind": "surface", "size": 0.5}),
+            ),
+            AppOperationRequest::new(
+                "document.delete",
+                json!({"revision": 3, "targets": [{"kind": "model", "model": 1}]}),
+            ),
+            AppOperationRequest::new("history.undo", json!({})),
+            AppOperationRequest::new("view.standard", json!({"direction": "+x"})),
+            AppOperationRequest::new("view.display", json!({"edges": false})),
+        ];
+
+        for request in requests {
+            let gui_result = dispatch_gui(
+                &mut gui_session,
+                &mut gui_viewport,
+                &mut console,
+                request.clone(),
+                HostApproval::NotRequired,
+            )
+            .unwrap();
+            let agent_result = dispatch(
+                &request,
+                &mut agent_session,
+                &mut agent_viewport,
+                HostApproval::NotRequired,
+            )
+            .unwrap();
+            assert_eq!(gui_result, agent_result);
+        }
+
+        assert_eq!(gui_session.revision(), agent_session.revision());
+        assert_eq!(gui_session.document.models.len(), 2);
+        assert_eq!(
+            gui_session.document.selection,
+            agent_session.document.selection
+        );
+        assert_eq!(gui_viewport.display, agent_viewport.display);
+        assert_eq!(gui_viewport.camera.target, agent_viewport.camera.target);
+        assert_eq!(gui_viewport.camera.yaw, agent_viewport.camera.yaw);
+        assert_eq!(gui_viewport.camera.pitch, agent_viewport.camera.pitch);
+        assert_eq!(console.len(), 7);
+    }
 }
